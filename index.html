@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Fire Claim Alerts — Lexington PA</title>
+<title>Fire/Claim Alerts</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
@@ -92,13 +92,23 @@
   .footerbar{position:fixed;bottom:0;left:0;right:0;background:var(--ink);border-top:1px solid var(--line);padding:9px 14px;display:flex;gap:8px;justify-content:center;z-index:6}
   @media(min-width:700px){ .brand{font-size:30px} }
 </style>
+<script>
+window.addEventListener('error', function(e){
+  var d = document.getElementById('jsErr');
+  if (!d){ d = document.createElement('div'); d.id='jsErr';
+    d.style.cssText='position:sticky;top:0;z-index:99;background:#7A1712;color:#FFD9D5;font:12px monospace;padding:8px 12px;';
+    document.body ? document.body.prepend(d) : addEventListener('DOMContentLoaded',function(){document.body.prepend(d);});
+  }
+  d.textContent = 'App error — screenshot this: ' + (e.message||'unknown') + ' @ line ' + (e.lineno||'?');
+});
+</script>
 </head>
 <body>
 
 <header>
   <div>
     <div class="brand">Fire<span class="fl">/</span>Claim Alerts</div>
-    <div class="sub">Real fires, real damage, residential · Notify NYC live (60 s) + NJ manual · Lexington Public Adjusters</div>
+    <div class="sub">Real fires, real damage, residential · Notify NYC live (60 s) + BNN paste + NJ</div>
   </div>
 </header>
 
@@ -162,7 +172,11 @@
     <div class="sub2" id="mSub"></div>
 
     <div class="field">
-      <label>Damage confirmed? (scene, Citizen, news, FD report)</label>
+      <label>Paste BNN / scanner alert — fills everything below</label>
+      <textarea id="mBNN" placeholder="NY | Bronx | Bronx | 1310 Morris Ave | Kitchen Fire | BX-2751 | ..." oninput="parseBNN()" style="min-height:52px"></textarea>
+    </div>
+    <div class="field">
+      <label>Damage confirmed? (scene, BNN, Citizen, news, FD report)</label>
       <select id="mDamage">
         <option value="">— not confirmed yet —</option>
         <option value="confirmed">Yes — visible property damage</option>
@@ -454,7 +468,9 @@ function contactLinks(owner, address, state){
   const rec = st==='NY'
     ? `https://a836-acris.nyc.gov/CP/`
     : `https://tax1.co.monmouth.nj.us/cgi-bin/prc6.cgi?&district=&ms_user=monm`;
+  const pshark = `https://www.propertyshark.com/mason/Property-Search/?searchtext=${ad}`;
   return `<div class="linkrow">
+    <a href="${pshark}" target="_blank" rel="noopener">PropertyShark</a>
     <a href="${tps}" target="_blank" rel="noopener">TruePeopleSearch</a>
     <a href="${fps}" target="_blank" rel="noopener">FastPeopleSearch</a>
     <a href="${ggl}" target="_blank" rel="noopener">Google owner</a>
@@ -484,6 +500,7 @@ function openConfirm(id){
   document.getElementById('mSub').textContent = (current.incident_classification||'Manual incident')+' — '+(current.alarm_box_location||current.address||'')+' '+(current.incident_borough||'');
   document.getElementById('mState').value = 'NY';
   document.getElementById('mAddr').value = current.parsedAddress ? current.parsedAddress + (current.incident_borough ? ', ' + current.incident_borough : '') : '';
+  document.getElementById('mBNN').value = '';
   document.getElementById('mDamage').value = '';
   document.getElementById('mContact').value = '';
   document.getElementById('mNotes').value = '';
@@ -497,7 +514,7 @@ function openManual(){
   openConfirm._manual = true;
   document.getElementById('mTitle').textContent = 'Add incident';
   document.getElementById('mSub').textContent = 'Scanner / NJ / word-of-mouth incident — enter the property address to pull the owner.';
-  ['mAddr','mDamage','mContact','mNotes'].forEach(i=>document.getElementById(i).value='');
+  ['mAddr','mDamage','mContact','mNotes','mBNN'].forEach(i=>document.getElementById(i).value='');
   document.getElementById('mOwner').innerHTML='';
   document.getElementById('mSuggest').style.display='none';
   document.getElementById('overlay').classList.add('on');
@@ -505,6 +522,28 @@ function openManual(){
 function closeModal(){ document.getElementById('overlay').classList.remove('on'); current=null; }
 function stateChanged(){ document.getElementById('mSuggest').style.display='none'; document.getElementById('mOwner').innerHTML=''; }
 
+let bnnTimer=null;
+function parseBNN(){
+  clearTimeout(bnnTimer);
+  bnnTimer = setTimeout(()=>{
+    const raw = document.getElementById('mBNN').value.trim();
+    if (!raw || raw.indexOf('|') < 0) return;
+    const p = raw.split('|').map(s=>s.trim());
+    const st = (p[0]||'').toUpperCase();
+    if (st !== 'NY' && st !== 'NJ') return;
+    const boro = p[2]||p[1]||'', addr = p[3]||'', type = p[4]||'';
+    if (!addr) return;
+    document.getElementById('mState').value = st;
+    document.getElementById('mAddr').value = addr + (boro ? ', ' + boro : '');
+    if (current){
+      current.incident_classification = type + (p[6]?' — '+p[6]:'');
+      const s = alarmSeverity(type + ' ' + raw);
+      current.label = s.label; current.sev = s.sev;
+      if (/severely damaged|destroyed|through the roof|collaps|burn/i.test(raw)) document.getElementById('mDamage').value = 'confirmed';
+    }
+    if (st === 'NY') doSuggest(); else document.getElementById('mLookupState').innerHTML = '<div class="actions" style="margin-top:0"><button class="btn" onclick="lookupNJ()">Look up NJ owner</button></div>';
+  }, 350);
+}
 let addrTimer=null;
 function addrInput(){
   clearTimeout(addrTimer);
