@@ -386,7 +386,7 @@ function render(){
   document.getElementById('nLeads').textContent = store.leads.length || '';
   const el = document.getElementById('alertList');
   if (!list.length){
-    el.innerHTML = '<div class="empty"><span class="stamp">No qualifying fires</span>No residential structural fires matching your filters in this window. Widen the window or relax a filter — or add an incident from the scanner.</div>';
+    el.innerHTML = '<div class="empty"><span class="stamp">No confirmed major fires right now</span>The live lane carries Notify NYC notices — big confirmed fires (usually 2-alarm+), a few per week. An empty list is normal and means no major fire in your window.<br><br>For everyday working fires happening right now, check <a href="https://x.com/NNYCFIREWIRE" target="_blank" rel="noopener">NYC Fire Wire</a> or <a href="https://citizen.com/explore" target="_blank" rel="noopener">Citizen</a>, then tap <b>+ Add incident</b> to run the owner lookup on any fire you find.</div>';
   } else {
     el.innerHTML = list.map(i => `
       <div class="card sev${i.sev}${i._new?' newly':''}">
@@ -404,9 +404,10 @@ function render(){
           <span>LAD <b>${esc(i.ladders_assigned_quantity||'0')}</b></span>
           <span>SRC <b>${esc(i.src)}</b></span>
         </div>
+        ${findLinks(i)}
         <div class="actions">
-          <button class="btn primary" onclick="openConfirm('${i.id}')">Confirm damage → owner</button>
-          <button class="btn ghost" onclick="quickDismiss('${i.id}')">Dismiss</button>
+          <button class="btn primary" data-act="confirm" data-id="${esc(i.id)}">Confirm damage → owner</button>
+          <button class="btn ghost" data-act="dismiss" data-id="${esc(i.id)}">Dismiss</button>
         </div>
       </div>`).join('');
   }
@@ -435,6 +436,15 @@ function render(){
     : '<div class="empty">Nothing dismissed.</div>';
 }
 
+function findLinks(i){
+  const loc = (i.alarm_box_location||'') + ' ' + (i.incident_borough||'');
+  const q = encodeURIComponent(loc.trim() + ' fire');
+  return `<div class="linkrow" style="margin-top:9px">
+    <a href="https://www.google.com/search?q=${q}&tbs=qdr:d" target="_blank" rel="noopener">Find exact address</a>
+    <a href="https://x.com/search?q=${q}&f=live" target="_blank" rel="noopener">Scanner posts</a>
+    <a href="https://citizen.com/explore" target="_blank" rel="noopener">Citizen map</a>
+  </div>`;
+}
 function contactLinks(owner, address, state){
   if (!owner && !address) return '';
   const nm = encodeURIComponent(owner||''), ad = encodeURIComponent(address||''), st = state||'NY';
@@ -647,6 +657,12 @@ function exportCSV(){
 }
 
 /* ============ boot ============ */
+document.getElementById('alertList').addEventListener('click', e => {
+  const b = e.target.closest('[data-act]');
+  if (!b) return;
+  if (b.dataset.act === 'confirm') openConfirm(b.dataset.id);
+  if (b.dataset.act === 'dismiss') quickDismiss(b.dataset.id);
+});
 updateNotifState();
 poll(true);
 setInterval(poll, POLL_MS);
