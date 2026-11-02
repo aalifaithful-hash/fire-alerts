@@ -8,7 +8,7 @@ export async function POST(req: NextRequest) {
   res.cookies.set(COOKIE, sessionToken(), {
     httpOnly: true,
     sameSite: "strict",
-    secure: req.nextUrl.protocol === "https:",
+    secure: req.nextUrl.protocol === "https:" || req.headers.get("x-forwarded-proto") === "https",
     path: "/",
     maxAge: 60 * 60 * 24 * 30,
   });

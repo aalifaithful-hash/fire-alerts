@@ -2,7 +2,10 @@ import Database from "better-sqlite3";
 import { mkdirSync } from "node:fs";
 import path from "node:path";
 
-export const DATA_DIR = path.resolve(/*turbopackIgnore: true*/ process.env.DATA_DIR || "./data");
+// DATA_DIR wins; on Railway the attached volume's mount path is used automatically.
+export const DATA_DIR = path.resolve(
+  /*turbopackIgnore: true*/ process.env.DATA_DIR || process.env.RAILWAY_VOLUME_MOUNT_PATH || "./data",
+);
 export const UPLOAD_DIR = path.join(DATA_DIR, "uploads");
 
 const SCHEMA = `

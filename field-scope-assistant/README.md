@@ -17,6 +17,15 @@ npm run dev                     # http://localhost:3000
 
 For production: `npm run build && npm start`. To use the app from your phone on site, deploy it to any Node host that has a persistent disk (a small VPS, Render, Fly.io or Railway with a volume), or run it on a machine you can reach. Set `APP_PASSCODE` whenever the app is reachable by anyone else.
 
+### Hosting on Railway (no computer needed)
+
+`railway.json` sets the build, start command and health check (`/api/health`). In Railway:
+1. **New Project → Deploy from GitHub repo →** `fire-alerts`.
+2. Service **Settings → Source**: Root Directory `field-scope-assistant`, Branch `claude/field-scope-assistant`.
+3. **Variables**: `ANTHROPIC_API_KEY`, `APP_PASSCODE`.
+4. Add a **Volume** to the service mounted at `/data`. The app finds it through `RAILWAY_VOLUME_MOUNT_PATH`. Without a volume, data is lost on every redeploy.
+5. **Settings → Networking → Generate Domain**, then open that URL on your phone.
+
 ### Environment variables
 
 | Variable | Required | Purpose |
