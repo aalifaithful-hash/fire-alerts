@@ -2,47 +2,38 @@ import { mkdirSync } from "node:fs";
 import path from "node:path";
 import { neon } from "@neondatabase/serverless";
 
-/**
- * Hosted Postgres (Neon) persistence.
- *
- * Replaces the old per-instance SQLite file (DATA_DIR/field-scope.db), whose
- * /tmp storage is not shared between Vercel serverless instances — projects
- * and visits would randomly appear as "not found" on reload.
- *
- * The schema is created lazily on first use (CREATE TABLE IF NOT EXISTS), so
- * every serverless instance self-migrates on deploy. DATA_DIR/UPLOAD_DIR are
- * still used for temporary file uploads only; no project records depend on
- * them anymore.
- */
-
-export const DATA_DIR = process.env.DATA_DIR || path.join(process.cwd(), ".data");
-export const UPLOAD_DIR = path.join(DATA_DIR, "uploads");
-mkdirSync(UPLOAD_DIR, { recursive: true });
-
-function connectionString(): string {
-  const url =
-    process.env.DATABASE_URL ||
-    process.env.POSTGRES_URL ||
-    process.env.DATABASE_URL_UNPOOLED ||
-    process.env.POSTGRES_URL_NON_POOLING;
-  if (!url) {
-    throw new Error(
-      "DATABASE_URL is not set. Connect a Postgres database (e.g. the Neon integration) to run this app."
-    );
-  }
-  return url;
+const connectionString =
+  process.env.DATABASE_URL ||
+  process.env.POSTGRES_URL ||
+  process.env.DATABASE_URL_UNPOOLED ||
+  process.env.POSTGRES_URL_NON_POOLING;
+if (!connectionString) {
+  throw new Error(
+    "Database connection string is not set. Expected DATABASE_URL (or POSTGRES_URL) from the Neon/Vercel Postgres integration."
+  );
 }
 
-type SqlTag = ReturnType<typeof neon>;
-let tagInstance: SqlTag | null = null;
-function getTag(): SqlTag {
-  if (!tagInstance) tagInstance = neon(connectionString());
-  return tagInstance;
+let tag: ReturnType<typeof neon> | null = null;
+function getTag() {
+  if (!tag) tag = neon(connectionString as string);
+  return tag;
+}
+
+export const DATA_DIR =
+  process.env.DATA_DIR || path.join(process.cwd(), ".data");
+export const UPLOAD_DIR = path.join(DATA_DIR, "uploads");
+try {
+  mkdirSync(UPLOAD_DIR, { recursive: true });
+} catch {
+  // ignore — serverless filesystems may be read-only; uploads use Blob
 }
 
 const SCHEMA: string[] = [
   `CREATE TABLE IF NOT EXISTS projects (
     id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    address TEXT NOT NULL DEFAULT '',
+    notes TEXT NOT NULL DEFAULT '',
     data TEXT NOT NULL DEFAULT '{}',
     is_demo INTEGER NOT NULL DEFAULT 0,
     created_at TEXT NOT NULL,
@@ -54,7 +45,8 @@ const SCHEMA: string[] = [
     floor TEXT,
     unit TEXT,
     room TEXT NOT NULL,
-    sort INTEGER NOT NULL DEFAULT 0
+    sort INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
   )`,
   `CREATE INDEX IF NOT EXISTS idx_locations_project ON locations(project_id)`,
   `CREATE TABLE IF NOT EXISTS documents (
@@ -62,9 +54,9 @@ const SCHEMA: string[] = [
     project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
     filename TEXT NOT NULL,
     stored_path TEXT NOT NULL,
-    size INTEGER NOT NULL,
+    size INTEGER NOT NULL DEFAULT 0,
     page_count INTEGER NOT NULL DEFAULT 0,
-    status TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'uploaded',
     error TEXT,
     created_at TEXT NOT NULL
   )`,
@@ -72,40 +64,35 @@ const SCHEMA: string[] = [
   `CREATE TABLE IF NOT EXISTS doc_pages (
     document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
     page INTEGER NOT NULL,
-    text TEXT NOT NULL,
+    text TEXT NOT NULL DEFAULT '',
     char_count INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (document_id, page)
   )`,
   `CREATE TABLE IF NOT EXISTS batches (
     id TEXT PRIMARY KEY,
-    document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
     project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    document_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
     start_page INTEGER NOT NULL,
     end_page INTEGER NOT NULL,
     status TEXT NOT NULL DEFAULT 'pending',
     attempts INTEGER NOT NULL DEFAULT 0,
     error TEXT,
-    updated_at TEXT NOT NULL
+    claimed_at TEXT,
+    created_at TEXT NOT NULL
   )`,
-  `CREATE INDEX IF NOT EXISTS idx_batches_document ON batches(document_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_batches_doc ON batches(document_id)`,
   `CREATE TABLE IF NOT EXISTS evidence (
     id TEXT PRIMARY KEY,
     project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
-    document_id TEXT REFERENCES documents(id) ON DELETE CASCADE,
-    batch_id TEXT,
-    page INTEGER NOT NULL,
-    photo_index INTEGER NOT NULL DEFAULT 0,
-    caption TEXT,
-    caption_source TEXT,
+    batch_id TEXT REFERENCES batches(id) ON DELETE SET NULL,
+    document_id TEXT REFERENCES documents(id) ON DELETE SET NULL,
+    page INTEGER,
+    kind TEXT NOT NULL DEFAULT 'text',
+    text TEXT NOT NULL DEFAULT '',
     location_id TEXT REFERENCES locations(id) ON DELETE SET NULL,
     location_text TEXT,
     location_confidence TEXT,
     location_basis TEXT,
-    materials TEXT NOT NULL DEFAULT '[]',
-    conditions TEXT NOT NULL DEFAULT '[]',
-    caption_statements TEXT NOT NULL DEFAULT '[]',
-    flags TEXT NOT NULL DEFAULT '[]',
-    readable INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL
   )`,
   `CREATE INDEX IF NOT EXISTS idx_evidence_project ON evidence(project_id)`,
@@ -175,7 +162,7 @@ export function ensureSchema(): Promise<void> {
   if (!schemaPromise) {
     schemaPromise = (async () => {
       const t = getTag();
-      for (const stmt of SCHEMA) await t.query(stmt);
+      for (const stmt of SCHEMA) await t([stmt] as unknown as TemplateStringsArray);
     })().catch((e) => {
       schemaPromise = null;
       throw e;
