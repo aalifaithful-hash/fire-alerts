@@ -4,13 +4,34 @@ import os from "node:os";
 import path from "node:path";
 import { PDFDocument, StandardFonts } from "pdf-lib";
 
+// Tests now run against the hosted Postgres database (same as production).
+// Set DATABASE_URL to run them; they are skipped without it.
+// `npm test` is not run during Vercel builds (only `next build` type-checks).
 process.env.DATA_DIR = mkdtempSync(path.join(os.tmpdir(), "fsa-test-"));
 
-const { useMemoryDb } = await import("@/lib/db");
+const { query } = await import("@/lib/db");
 const repo = await import("@/lib/repo");
 const svc = await import("@/lib/service");
 const { setStructuredImpl } = await import("@/lib/ai/client");
 const { blankOp } = await import("@/lib/patch");
+
+const hasDb = !!process.env.DATABASE_URL;
+const describeDb = hasDb ? describe : describe.skip;
+
+async function cleanDb() {
+  // Order matters for foreign keys; projects cascade but be explicit.
+  await query`DELETE FROM manual_conflicts`;
+  await query`DELETE FROM manuals`;
+  await query`DELETE FROM checklist_templates`;
+  await query`DELETE FROM drafts`;
+  await query`DELETE FROM evidence`;
+  await query`DELETE FROM batches`;
+  await query`DELETE FROM doc_pages`;
+  await query`DELETE FROM documents`;
+  await query`DELETE FROM visits`;
+  await query`DELETE FROM locations`;
+  await query`DELETE FROM projects`;
+}
 
 type Req = { system: string; content: { type: string; text?: string }[] };
 let calls: Req[] = [];
@@ -32,16 +53,16 @@ const aEquip = (room: string, type: string, quantity: number | null, over: Recor
   statusDate: null, source: "pm", carriedForward: false, ...over,
 });
 
-beforeEach(() => {
-  useMemoryDb();
+beforeEach(async () => {
   calls = [];
+  if (hasDb) await cleanDb();
 });
 
-describe("example drying-only job end to end", () => {
+describeDb("example drying-only job end to end", () => {
   it("produces exactly the requested scope", async () => {
-    const p = repo.createProject({ address: "55 Water St, Apt 4B" });
-    const v = repo.createVisit(p.id, { type: "initial_mitigation", visitDate: "2026-11-02" });
-    repo.updateVisitFields(p.id, v.id, {
+    const p = await repo.createProject({ address: "55 Water St, Apt 4B" });
+    const v = await repo.createVisit(p.id, { type: "initial_mitigation", visitDate: "2026-11-02" });
+    await repo.updateVisitFields(p.id, v.id, {
       fieldNotes:
         "Pipe burst above this apartment. Source repaired. Cat 2. Living room flooring and walls are wet. Kitchen cabinets need to be detached. Bedroom plaster ceiling near the window is wet. Drying only for now. CC+1, three days equipment. One dehumidifier in the living room, one in the kitchen, one in the bedroom.",
     });
@@ -71,34 +92,35 @@ describe("example drying-only job end to end", () => {
     expect(draft.text).toContain("CC+1 (1 crew chief + 1 subcontractor)");
     expect(draft.text).toContain("Category: Cat 2");
     expect(draft.text).not.toMatch(/remove|demolition|extract/i);
-    const f = repo.getVisit(p.id, v.id).facts;
+    const f = (await repo.getVisit(p.id, v.id)).facts;
     // demo recommendation withheld, extraction offered for accept/reject only
     expect(f.recommendations.map((r) => r.category)).toEqual(["extraction"]);
     expect(f.questions).toHaveLength(1);
-    expect(repo.getProject(p.id).crewRequirements).toBe("CC+1");
+    expect((await repo.getProject(p.id)).crewRequirements).toBe("CC+1");
     // PDF text and notes are wrapped as evidence; system prompt carries the injection rule
     expect(calls[0].system).toMatch(/not instructions/);
   });
 });
 
-describe("no mixing of project data", () => {
+describeDb("no mixing of project data", () => {
   it("context and evidence references stay within one project", async () => {
-    const a = repo.createProject({ address: "1 Alpha Rd" });
-    const b = repo.createProject({ address: "999 Bravo Blvd", customer: "BRAVO-SECRET-CUSTOMER" });
-    repo.insertLocation(b.id, { floor: null, unit: "B-77", room: "Bravo Vault" });
-    const bv = repo.createVisit(b.id, { type: "initial_assessment", visitDate: "2026-11-01" });
-    repo.updateVisitFields(b.id, bv.id, { fieldNotes: "BRAVO-ONLY-NOTE about the vault" });
+    const a = await repo.createProject({ address: "1 Alpha Rd" });
+    const b = await repo.createProject({ address: "999 Bravo Blvd", customer: "BRAVO-SECRET-CUSTOMER" });
+    await repo.insertLocation(b.id, { floor: null, unit: "B-77", room: "Bravo Vault" });
+    const bv = await repo.createVisit(b.id, { type: "initial_assessment", visitDate: "2026-11-01" });
+    await repo.updateVisitFields(b.id, bv.id, { fieldNotes: "BRAVO-ONLY-NOTE about the vault" });
     // evidence row in project B
-    const bDoc = repo.createDocument(b.id, { id: "doc_b", filename: "b.pdf", storedPath: "/nonexistent", size: 1, pageCount: 1 });
-    repo.createBatches(b.id, bDoc.id, [[1, 1]]);
-    const bBatch = repo.claimNextBatch(b.id, bDoc.id)!;
-    repo.replaceBatchEvidence(b.id, bDoc.id, bBatch.id, [
+    const bDoc = await repo.createDocument(b.id, { id: "doc_b", filename: "b.pdf", storedPath: "/nonexistent", size: 1, pageCount: 1 });
+    await repo.createBatches(b.id, bDoc.id, [[1, 1]]);
+    const bBatch = await repo.claimNextBatch(b.id, bDoc.id);
+    if (!bBatch) throw new Error("expected a batch");
+    await repo.replaceBatchEvidence(b.id, bDoc.id, bBatch.id, [
       { page: 1, photoIndex: 1, caption: "BRAVO-CAPTION", captionSource: "pdf_text", locationId: null, locationText: null, locationConfidence: "high", locationBasis: "caption", materials: [], conditions: [], captionStatements: [], flags: [], readable: true },
     ]);
-    const bEvidenceId = repo.listEvidence(b.id)[0].id;
+    const bEvidenceId = (await repo.listEvidence(b.id))[0].id;
 
-    const av = repo.createVisit(a.id, { type: "initial_assessment", visitDate: "2026-11-02" });
-    repo.updateVisitFields(a.id, av.id, { fieldNotes: "Alpha kitchen wet." });
+    const av = await repo.createVisit(a.id, { type: "initial_assessment", visitDate: "2026-11-02" });
+    await repo.updateVisitFields(a.id, av.id, { fieldNotes: "Alpha kitchen wet." });
     fake(() => ({
       jobInfo: emptyJob,
       dryingOnly: false,
@@ -111,29 +133,29 @@ describe("no mixing of project data", () => {
     await svc.generateVisit(a.id, av.id);
     const prompt = promptText(calls[0]);
     for (const leak of ["Bravo", "BRAVO", "B-77", bEvidenceId]) expect(prompt).not.toContain(leak);
-    const f = repo.getVisit(a.id, av.id).facts;
+    const f = (await repo.getVisit(a.id, av.id)).facts;
     expect(f.items[0].evidenceIds).toEqual([]); // cross-project evidence id dropped
-    expect(() => repo.getVisit(a.id, bv.id)).toThrow(); // visit lookup is project-scoped
-    expect(repo.listLocations(a.id).map((l) => l.room)).toEqual(["Kitchen"]);
-    expect(() => repo.setEvidenceLocation(a.id, bEvidenceId, null)).toThrow();
+    await expect(repo.getVisit(a.id, bv.id)).rejects.toThrow(); // visit lookup is project-scoped
+    expect((await repo.listLocations(a.id)).map((l) => l.room)).toEqual(["Kitchen"]);
+    await expect(repo.setEvidenceLocation(a.id, bEvidenceId, {})).rejects.toThrow();
   });
 });
 
-describe("new visits", () => {
-  it("never copy yesterday's visit times or access outcome", () => {
-    const p = repo.createProject({ address: "2 Main" });
-    const v1 = repo.createVisit(p.id, { type: "daily_monitoring", visitDate: "2026-11-01" });
-    repo.updateVisitFields(p.id, v1.id, { appointmentTime: "09:00", arrivalTime: "09:20", departureTime: "10:05", accessOutcome: "No answer" });
-    const v2 = repo.createVisit(p.id, { type: "daily_monitoring", visitDate: "2026-11-02" });
+describeDb("new visits", () => {
+  it("never copy yesterday's visit times or access outcome", async () => {
+    const p = await repo.createProject({ address: "2 Main" });
+    const v1 = await repo.createVisit(p.id, { type: "daily_monitoring", visitDate: "2026-11-01" });
+    await repo.updateVisitFields(p.id, v1.id, { appointmentTime: "09:00", arrivalTime: "09:20", departureTime: "10:05", accessOutcome: "No answer" });
+    const v2 = await repo.createVisit(p.id, { type: "daily_monitoring", visitDate: "2026-11-02" });
     expect([v2.appointmentTime, v2.arrivalTime, v2.departureTime, v2.accessOutcome]).toEqual([null, null, null, null]);
   });
 });
 
-describe("corrections through the service", () => {
+describeDb("corrections through the service", () => {
   async function setup() {
-    const p = repo.createProject({ address: "3 Main" });
-    const v = repo.createVisit(p.id, { type: "daily_monitoring", visitDate: "2026-11-02" });
-    repo.updateVisitFields(p.id, v.id, { fieldNotes: "Bathroom floor elevated. Kitchen wall elevated. 2 air movers in each." });
+    const p = await repo.createProject({ address: "3 Main" });
+    const v = await repo.createVisit(p.id, { type: "daily_monitoring", visitDate: "2026-11-02" });
+    await repo.updateVisitFields(p.id, v.id, { fieldNotes: "Bathroom floor elevated. Kitchen wall elevated. 2 air movers in each." });
     fake(() => ({
       jobInfo: emptyJob, dryingOnly: false, carryForwardConfirmed: false,
       items: [aItem("Bathroom", "moisture_elevated", "Floor readings remain elevated"), aItem("Kitchen", "moisture_elevated", "Wall readings remain elevated")],
@@ -141,7 +163,7 @@ describe("corrections through the service", () => {
       questions: [], recommendations: [],
     }));
     await svc.generateVisit(p.id, v.id);
-    return { p, v: repo.getVisit(p.id, v.id) };
+    return { p, v: await repo.getVisit(p.id, v.id) };
   }
 
   it("'Bathroom is dry' changes only the bathroom and keeps its equipment", async () => {
@@ -150,34 +172,34 @@ describe("corrections through the service", () => {
     fake(() => ({ intent: "apply", clarification: null, ops: [blankOp("update_item", { targetId: bathItem.id, category: "moisture_dry", text: "Floor is dry" })] }));
     const r = await svc.correctVisit(p.id, v.id, "Bathroom is dry.");
     expect(r.kind).toBe("applied");
-    const text = repo.getVisit(p.id, v.id).doc!;
+    const text = (await repo.getVisit(p.id, v.id)).doc!;
     const all = JSON.stringify(text);
     expect(all).toContain("Floor is dry");
     expect(all).toContain("Wall readings remain elevated");
     expect(all.match(/2 air movers \(operating\)/g)).toHaveLength(2);
-    expect(repo.listDrafts(p.id, v.id)).toHaveLength(2);
+    expect(await repo.listDrafts(p.id, v.id)).toHaveLength(2);
   });
 
   it("restore brings back a previous draft as a new version", async () => {
     const { p, v } = await setup();
-    const first = repo.listDrafts(p.id, v.id)[0];
+    const first = (await repo.listDrafts(p.id, v.id))[0];
     fake(() => ({ intent: "apply", clarification: null, ops: [blankOp("remove_item", { targetId: v.facts.items[0].id })] }));
     await svc.correctVisit(p.id, v.id, "Remove the bathroom line");
-    expect(repo.getVisit(p.id, v.id).facts.items).toHaveLength(1);
-    svc.restoreDraft(p.id, v.id, first.id);
-    expect(repo.getVisit(p.id, v.id).facts.items).toHaveLength(2);
-    expect(repo.listDrafts(p.id, v.id)[0].trigger).toBe("restore");
+    expect((await repo.getVisit(p.id, v.id)).facts.items).toHaveLength(1);
+    await svc.restoreDraft(p.id, v.id, first.id);
+    expect((await repo.getVisit(p.id, v.id)).facts.items).toHaveLength(2);
+    expect((await repo.listDrafts(p.id, v.id))[0].trigger).toBe("restore");
   });
 
   it("asks a short clarification when two rooms could match", async () => {
-    const p = repo.createProject({ address: "4 Main" });
-    repo.insertLocation(p.id, { floor: "19", unit: "19C", room: "Closet" });
-    repo.insertLocation(p.id, { floor: "20", unit: "20A", room: "Closet" });
-    const v = repo.createVisit(p.id, { type: "daily_monitoring", visitDate: "2026-11-02" });
+    const p = await repo.createProject({ address: "4 Main" });
+    await repo.insertLocation(p.id, { floor: "19", unit: "19C", room: "Closet" });
+    await repo.insertLocation(p.id, { floor: "20", unit: "20A", room: "Closet" });
+    const v = await repo.createVisit(p.id, { type: "daily_monitoring", visitDate: "2026-11-02" });
     fake(() => ({ intent: "apply", clarification: null, ops: [blankOp("add_item", { room: "Closet", category: "moisture_dry", text: "Closet is dry" })] }));
     const r = await svc.correctVisit(p.id, v.id, "Closet is dry");
     expect(r.kind).toBe("clarify");
-    expect(repo.listDrafts(p.id, v.id)).toHaveLength(0);
+    expect(await repo.listDrafts(p.id, v.id)).toHaveLength(0);
   });
 });
 
@@ -201,7 +223,7 @@ describe("checklist", () => {
   });
 });
 
-describe("PDF pipeline", () => {
+describeDb("PDF pipeline", () => {
   it("extracts text, batches pages, keeps photo/caption pairs and flags uncertain rooms", async () => {
     const pdf = await PDFDocument.create();
     const font = await pdf.embedFont(StandardFonts.Helvetica);
@@ -210,11 +232,11 @@ describe("PDF pipeline", () => {
       page.drawText(`Unit 19C - Closet  Photo ${i}: wall staining at baseboard`, { x: 40, y: 700, size: 12, font });
     }
     const bytes = await pdf.save();
-    const p = repo.createProject({ address: "5 Main" });
+    const p = await repo.createProject({ address: "5 Main" });
     const doc = await svc.ingestPdf(p.id, { name: "report.pdf", bytes });
     expect(doc.pageCount).toBe(6);
-    expect(repo.batchProgress(p.id, doc.id).total).toBe(2);
-    expect(repo.getPages(p.id, doc.id, 1, 1)[0].text).toContain("Photo 1");
+    expect((await repo.batchProgress(p.id, doc.id)).total).toBe(2);
+    expect((await repo.getPages(doc.id, 1, 1))[0].text).toContain("Photo 1");
 
     fake((req) => {
       const m = promptText(req).match(/ORIGINAL pages (\d+)–(\d+)/)!;
@@ -248,7 +270,7 @@ describe("PDF pipeline", () => {
             pages: Array.from({ length: b - a + 1 }, (_, k) => ({
               page: a + k, readable: true, issue: null,
               photos: [
-                { index: 1, caption: `Photo ${a + k}`, captionSource: "pdf_text", floor: "19", unit: "19C", room: "Closet", locationBasis: "caption", locationConfidence: "high", materials: [], visibleConditions: [], captionStatements: [], flags: [] },
+                { index: 1, caption: `Photo ${a + k}`, captionSource: "pdf_text", floor: "19", unit: "19C", room: "Closet", locationBasis: "caption", locationConfidence: "high", materials: ["drywall"], visibleConditions: ["staining at baseboard"], captionStatements: [], flags: [] },
                 { index: 2, caption: null, captionSource: "none", floor: null, unit: null, room: "Bedroom", locationBasis: "visual", locationConfidence: "low", materials: [], visibleConditions: [], captionStatements: [], flags: [] },
               ],
             })),
@@ -259,13 +281,13 @@ describe("PDF pipeline", () => {
       const r = await svc.processNextBatch(p.id, doc.id);
       if (r.done) break;
     }
-    const ev = repo.listEvidence(p.id);
+    const ev = await repo.listEvidence(p.id);
     expect(ev).toHaveLength(12);
     expect(ev.filter((e) => e.locationId).every((e) => e.caption?.startsWith("Photo"))).toBe(true);
     expect(ev.filter((e) => !e.locationId)).toHaveLength(6);
     expect(ev.find((e) => !e.locationId)!.flags).toContain("Uncertain room assignment");
-    expect(repo.listLocations(p.id).map((l) => l.room)).toEqual(["Closet"]); // low-confidence room not created
-    expect(repo.listDocuments(p.id)[0].status).toBe("done");
+    expect((await repo.listLocations(p.id)).map((l) => l.room)).toEqual(["Closet"]); // low-confidence room not created
+    expect((await repo.listDocuments(p.id))[0].status).toBe("done");
     expect(calls.some((c) => c.content.some((b) => b.type === "document"))).toBe(true);
   });
 });
