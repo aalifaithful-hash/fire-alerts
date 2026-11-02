@@ -301,6 +301,8 @@ export type Evidence = {
   page: number; kind: string; text: string;
   locationId: string | null; locationText: string | null;
   locationConfidence: string | null; locationBasis: string | null;
+  caption?: string | null; conditions?: string | null; materials?: string | null;
+  captionStatements?: string | null; flags?: string | null;
 };
 type EvidenceRow = {
   id: string; project_id: string; document_id: string; batch_id: string | null;
@@ -528,8 +530,8 @@ export async function deleteTemplate(id: string): Promise<void> {
 const STARTER_TEMPLATES: { name: string; visitTypes: VisitType[]; items: string[] }[] = [
   { name: "Initial assessment", visitTypes: ["initial"], items: ["Exterior walk-around", "Interior walk-through", "Moisture mapping", "Photo documentation", "Source identification"] },
   { name: "Mitigation monitoring", visitTypes: ["monitoring"], items: ["Equipment check", "Moisture readings", "Progress photos", "Customer update"] },
-  { name: "Final walk-through", visitTypes: ["final"], items: ["Dry standard verification", "Final photos", "Customer sign-off", "Documentation complete"] },
-  { name: "General checklist", visitTypes: ["initial", "monitoring", "final"], items: ["Safety check", "Documentation", "Customer communication"] },
+  { name: "Final walk-through", visitTypes: ["dry"], items: ["Dry standard verification", "Final photos", "Customer sign-off", "Documentation complete"] },
+  { name: "General checklist", visitTypes: ["initial", "monitoring", "dry"], items: ["Safety check", "Documentation", "Customer communication"] },
 ];
 
 async function ensureStarterTemplates(): Promise<void> {
