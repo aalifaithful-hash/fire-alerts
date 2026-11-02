@@ -362,7 +362,7 @@ export async function setEvidenceLocation(
 type VisitRow = {
   id: string; project_id: string; type: string; visit_date: string;
   facts: string; doc: string | null; manual_text: string | null; text: string;
-  created_at: string; updated_at: string;
+  field_notes: string; created_at: string; updated_at: string;
 };
 function toVisit(r: VisitRow): Visit {
   return {
@@ -374,9 +374,10 @@ function toVisit(r: VisitRow): Visit {
     doc: r.doc ? (JSON.parse(r.doc) as ScopeDoc) : null,
     manualText: r.manual_text,
     text: r.text,
+    fieldNotes: r.field_notes,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
-  };
+  } as Visit;
 }
 
 export async function listVisits(projectId: string): Promise<Visit[]> {
@@ -394,18 +395,18 @@ export async function createVisit(projectId: string, input: { type: VisitType; v
   const id = newId("vis");
   const now = nowIso();
   const facts = JSON.stringify(emptyFacts());
-  await query`INSERT INTO visits (id, project_id, type, visit_date, facts, doc, manual_text, text, created_at, updated_at)
-    VALUES (${id}, ${projectId}, ${input.type}, ${input.visitDate}, ${facts}, NULL, NULL, '', ${now}, ${now})`;
+  await query`INSERT INTO visits (id, project_id, type, visit_date, facts, doc, manual_text, text, field_notes, created_at, updated_at)
+    VALUES (${id}, ${projectId}, ${input.type}, ${input.visitDate}, ${facts}, NULL, NULL, '', '', ${now}, ${now})`;
   await touchProject(projectId);
   return getVisit(projectId, id);
 }
 
-export const VISIT_EDITABLE = ["type", "visitDate", "facts", "doc", "manualText", "text"] as const;
+export const VISIT_EDITABLE = ["type", "visitDate", "facts", "doc", "manualText", "text", "fieldNotes"] as const;
 
 export async function updateVisitFields(
   projectId: string,
   id: string,
-  patch: Partial<Pick<Visit, "type" | "visitDate" | "facts" | "doc" | "manualText" | "text">>
+  patch: Partial<Pick<Visit, "type" | "visitDate" | "facts" | "doc" | "manualText" | "text" | "fieldNotes">>
 ): Promise<Visit> {
   await getVisit(projectId, id);
   const updates: unknown[] = [];
@@ -415,6 +416,7 @@ export async function updateVisitFields(
   if (patch.doc !== undefined) updates.push(tag`UPDATE visits SET doc = ${patch.doc ? JSON.stringify(patch.doc) : null} WHERE id = ${id}`);
   if (patch.manualText !== undefined) updates.push(tag`UPDATE visits SET manual_text = ${patch.manualText} WHERE id = ${id}`);
   if (patch.text !== undefined) updates.push(tag`UPDATE visits SET text = ${patch.text} WHERE id = ${id}`);
+  if (patch.fieldNotes !== undefined) updates.push(tag`UPDATE visits SET field_notes = ${patch.fieldNotes} WHERE id = ${id}`);
   updates.push(tag`UPDATE visits SET updated_at = ${nowIso()} WHERE id = ${id}`);
   if (updates.length) await tx(updates);
   await touchProject(projectId);
@@ -429,8 +431,9 @@ export async function saveVisitState(input: {
   const vrow = await queryOne<{ version: string }>`SELECT MAX(version) AS version FROM drafts WHERE visit_id = ${input.visitId}`;
   const version = Number(vrow?.version ?? 0) + 1;
   const now = nowIso();
+  const visit = await getVisit(input.projectId, input.visitId);
   await tx([
-    tag`UPDATE visits SET facts = ${input.facts ? JSON.stringify(input.facts) : (await getVisit(input.projectId, input.visitId)).facts ? JSON.stringify((await getVisit(input.projectId, input.visitId)).facts) : JSON.stringify(emptyFacts())}, doc = ${input.doc !== undefined ? (input.doc ? JSON.stringify(input.doc) : null) : undefined}, manual_text = ${input.manualText !== undefined ? input.manualText : undefined}, text = ${input.text}, updated_at = ${now} WHERE id = ${input.visitId}`,
+    tag`UPDATE visits SET facts = ${input.facts ? JSON.stringify(input.facts) : JSON.stringify(visit.facts)}, doc = ${input.doc !== undefined ? (input.doc ? JSON.stringify(input.doc) : null) : JSON.stringify(visit.doc)}, manual_text = ${input.manualText !== undefined ? input.manualText : visit.manualText}, text = ${input.text}, updated_at = ${now} WHERE id = ${input.visitId}`,
     tag`INSERT INTO drafts (id, project_id, visit_id, version, trigger, facts, doc, manual_text, text, changes, input, created_at)
       VALUES (${newId("drf")}, ${input.projectId}, ${input.visitId}, ${version}, ${input.trigger},
         ${input.facts ? JSON.stringify(input.facts) : null}, ${input.doc !== undefined ? (input.doc ? JSON.stringify(input.doc) : null) : null},
@@ -447,8 +450,9 @@ export async function listDrafts(projectId: string, visitId: string): Promise<Dr
   }>`SELECT * FROM drafts WHERE project_id = ${projectId} AND visit_id = ${visitId} ORDER BY version DESC`;
   return rows.map((r) => ({
     id: r.id,
+    visitId,
     version: Number(r.version),
-    trigger: r.trigger,
+    trigger: r.trigger as DraftVersion["trigger"],
     facts: r.facts ? (JSON.parse(r.facts) as VisitFacts) : undefined,
     doc: r.doc ? (JSON.parse(r.doc) as ScopeDoc) : undefined,
     manualText: r.manual_text ?? undefined,
