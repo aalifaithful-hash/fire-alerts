@@ -35,7 +35,7 @@ export class UserError extends Error {}
 export const MAX_UPLOAD_BYTES = 200 * 1024 * 1024;
 
 export async function ingestPdf(projectId: string, file: { name: string; bytes: Uint8Array }) {
-  repo.getProject(projectId);
+  await repo.getProject(projectId);
   if (!isPdf(file.bytes)) throw new UserError("That file is not a PDF.");
   if (file.bytes.length > MAX_UPLOAD_BYTES) throw new UserError("PDF is larger than 200 MB.");
   const id = newId("doc");
@@ -57,10 +57,10 @@ export async function ingestPdf(projectId: string, file: { name: string; bytes: 
     pageCount = (await PDFDocument.load(file.bytes, { ignoreEncryption: true })).getPageCount();
     pages = Array(pageCount).fill("");
   }
-  const doc = repo.createDocument(projectId, { id, filename: file.name.slice(0, 200), storedPath, size: file.bytes.length, pageCount });
-  repo.savePages(id, pages);
-  repo.createBatches(projectId, id, planBatches(pageCount));
-  repo.setDocumentStatus(projectId, id, "processing", extractError);
+  const doc = await repo.createDocument(projectId, { id, filename: file.name.slice(0, 200), storedPath, size: file.bytes.length, pageCount });
+  await repo.savePages(id, pages.map((text, i) => ({ page: i + 1, text })));
+  await repo.createBatches(projectId, id, planBatches(pageCount));
+  await repo.setDocumentStatus(projectId, id, "processing", extractError);
   const scanned = pages.filter((t) => t.replace(/\s/g, "").length < SCANNED_THRESHOLD).length;
   return { ...doc, scannedPages: scanned };
 }
@@ -71,11 +71,11 @@ export async function ingestPdf(projectId: string, file: { name: string; bytes: 
  * interrupted batches are picked up again automatically.
  */
 export async function processNextBatch(projectId: string, documentId: string, retryFailed = false) {
-  const doc = repo.getDocument(projectId, documentId);
-  const batch = repo.claimNextBatch(projectId, documentId, retryFailed);
+  const doc = await repo.getDocument(projectId, documentId);
+  const batch = await repo.claimNextBatch(projectId, documentId, retryFailed);
   if (!batch) {
-    const p = repo.batchProgress(projectId, documentId);
-    repo.setDocumentStatus(projectId, documentId, p.failed ? "partial" : "done", p.failed ? `${p.failed} batch(es) failed` : null);
+    const p = await repo.batchProgress(projectId, documentId);
+    await repo.setDocumentStatus(projectId, documentId, p.failed ? "partial" : "done", p.failed ? `${p.failed} batch(es) failed` : null);
     return { done: true, progress: p };
   }
   try {
@@ -84,18 +84,18 @@ export async function processNextBatch(projectId: string, documentId: string, re
     if (chunk.length > MAX_CHUNK_BYTES) {
       if (batch.endPage > batch.startPage) {
         // split oversized batch into single pages
-        repo.finishBatch(batch.id, true, "split into single pages", batch.attempts);
-        repo.createBatches(
+        await repo.finishBatch(batch.id, "done", "split into single pages", batch.attempts);
+        await repo.createBatches(
           projectId,
           documentId,
           Array.from({ length: batch.endPage - batch.startPage + 1 }, (_, i) => [batch.startPage + i, batch.startPage + i] as [number, number]),
         );
-        return { done: false, progress: repo.batchProgress(projectId, documentId) };
+        return { done: false, progress: await repo.batchProgress(projectId, documentId) };
       }
       throw new UserError("Page is too large to analyze (over 18 MB).");
     }
-    const pages = repo.getPages(projectId, documentId, batch.startPage, batch.endPage);
-    const locations = repo.listLocations(projectId);
+    const pages = await repo.getPages(documentId, batch.startPage, batch.endPage);
+    const locations = await repo.listLocations(projectId);
     const pageText = pages
       .map((p) =>
         p.charCount < SCANNED_THRESHOLD
@@ -119,19 +119,19 @@ ${pageText}
       },
     ];
     const out = await structured({ schema: PdfBatchOutput, system: PDF_SYSTEM, content, effort: "medium", maxTokens: 32000 });
-    saveBatchEvidence(projectId, documentId, batch, out);
-    repo.finishBatch(batch.id, true, null, batch.attempts);
+    await saveBatchEvidence(projectId, documentId, batch, out);
+    await repo.finishBatch(batch.id, "done", null, batch.attempts);
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e);
     const retryable = !(e instanceof UserError) && (e as { retryable?: boolean }).retryable !== false;
-    repo.finishBatch(batch.id, false, msg.slice(0, 300), retryable ? batch.attempts : 99);
-    return { done: false, progress: repo.batchProgress(projectId, documentId), error: msg };
+    await repo.finishBatch(batch.id, "failed", msg.slice(0, 300), retryable ? batch.attempts : 99);
+    return { done: false, progress: await repo.batchProgress(projectId, documentId), error: msg };
   }
-  return { done: false, progress: repo.batchProgress(projectId, documentId) };
+  return { done: false, progress: await repo.batchProgress(projectId, documentId) };
 }
 
-export function saveBatchEvidence(projectId: string, documentId: string, batch: repo.Batch, out: PdfBatchOutput) {
-  const locations = repo.listLocations(projectId);
+export async function saveBatchEvidence(projectId: string, documentId: string, batch: repo.Batch, out: PdfBatchOutput) {
+  const locations = await repo.listLocations(projectId);
   const rows: Parameters<typeof repo.replaceBatchEvidence>[3] = [];
   for (const page of out.pages) {
     if (page.page < batch.startPage || page.page > batch.endPage) continue; // ignore out-of-range claims
@@ -152,7 +152,7 @@ export function saveBatchEvidence(projectId: string, documentId: string, batch: 
         const r = resolveLocation({ floor: ph.floor, unit: ph.unit, room: ph.room }, locations);
         if (r.kind === "existing") locationId = r.location.id;
         else if (r.kind === "new") {
-          const loc = repo.insertLocation(projectId, { floor: r.floor, unit: r.unit, room: r.room });
+          const loc = await repo.insertLocation(projectId, { floor: r.floor, unit: r.unit, room: r.room });
           locations.push(loc);
           locationId = loc.id;
         } else if (r.kind === "ambiguous") flags.push(`Room unclear: ${r.candidates.map(fullLabel).join(" or ")}`);
@@ -175,7 +175,7 @@ export function saveBatchEvidence(projectId: string, documentId: string, batch: 
       });
     }
   }
-  repo.replaceBatchEvidence(projectId, documentId, batch.id, rows);
+  await repo.replaceBatchEvidence(projectId, documentId, batch.id, rows);
 }
 
 // =====================================================================
@@ -194,24 +194,23 @@ export interface VisitContext {
   conflicts: string[];
 }
 
-export function correctionInputs(projectId: string, visitId: string): string[] {
-  return repo
-    .listDrafts(projectId, visitId)
+export async function correctionInputs(projectId: string, visitId: string): Promise<string[]> {
+  return (await repo.listDrafts(projectId, visitId))
     .filter((d) => d.trigger === "correction" && d.input)
     .reverse()
     .map((d) => d.input as string);
 }
 
-export function buildContext(projectId: string, visitId: string): VisitContext {
-  const project = repo.getProject(projectId);
-  const visit = repo.getVisit(projectId, visitId);
-  const all = repo.listVisits(projectId);
+export async function buildContext(projectId: string, visitId: string): Promise<VisitContext> {
+  const project = await repo.getProject(projectId);
+  const visit = await repo.getVisit(projectId, visitId);
+  const all = await repo.listVisits(projectId);
   const idx = all.findIndex((v) => v.id === visitId);
   const prior = all.slice(0, idx).filter((v) => v.visitDate <= visit.visitDate);
-  const locations = repo.listLocations(projectId);
-  const evidence = repo.listEvidence(projectId);
+  const locations = await repo.listLocations(projectId);
+  const evidence = await repo.listEvidence(projectId);
   const answers = visit.facts.questions.filter((q) => q.status === "answered").map((q) => `${q.text} — ${q.answer}`);
-  const pmText = [visit.fieldNotes, ...correctionInputs(projectId, visitId), ...answers].filter(Boolean).join("\n");
+  const pmText = [visit.fieldNotes, ...(await correctionInputs(projectId, visitId)), ...answers].filter(Boolean).join("\n");
   const corpusText = [
     pmText,
     JSON.stringify(project),
@@ -219,10 +218,9 @@ export function buildContext(projectId: string, visitId: string): VisitContext {
     ...evidence.flatMap((e) => [e.caption ?? "", ...e.captionStatements]),
     ...prior.flatMap((v) => [v.fieldNotes, ...v.facts.items.map((i) => `${i.text} ${i.quantity ?? ""}`), ...v.facts.equipment.map((e) => String(e.quantity ?? ""))]),
   ].join("\n");
-  const rules = repo
-    .listManuals()
+  const rules = (await repo.listManuals())
     .flatMap((m) => m.rules.map((r) => ({ manual: m.name, topic: r.topic, rule: r.rule, id: r.id })));
-  const conflicts = repo.listConflicts().map((c) => c.description);
+  const conflicts = (await repo.listConflicts()).map((c) => c.description);
   return { project, visit, locations, evidence, prior, pmText, corpusText, rules, conflicts };
 }
 
@@ -301,31 +299,34 @@ function contextBlock(ctx: VisitContext, opts: { evidence: boolean }): string {
 // Commit / render
 // =====================================================================
 
-export function renderVisit(projectId: string, visit: Visit, facts: VisitFacts): ScopeDoc {
-  const project = repo.getProject(projectId);
-  const all = repo.listVisits(projectId);
+export async function renderVisit(projectId: string, visit: Visit, facts: VisitFacts): Promise<ScopeDoc> {
+  const project = await repo.getProject(projectId);
+  const all = await repo.listVisits(projectId);
   const idx = all.findIndex((v) => v.id === visit.id);
   const history = all
     .slice(0, idx < 0 ? all.length : idx)
     .filter((v) => v.visitDate <= visit.visitDate)
     .map((v) => ({ visitDate: v.visitDate, type: v.type, facts: v.facts }));
-  return renderDoc({ project, visit, facts, locations: repo.listLocations(projectId), history });
+  return renderDoc({ project, visit, facts, locations: await repo.listLocations(projectId), history });
 }
 
-export function commit(
+export async function commit(
   projectId: string,
   visitId: string,
   facts: VisitFacts,
   version: { trigger: DraftVersion["trigger"]; input: string | null; changes: string[] },
   manualText: string | null = null,
 ) {
-  const visit = repo.getVisit(projectId, visitId);
-  const doc = renderVisit(projectId, visit, facts);
+  const visit = await repo.getVisit(projectId, visitId);
+  const doc = await renderVisit(projectId, visit, facts);
   const text = manualText ?? docToText(doc);
   const changes = [...version.changes];
   if (visit.manualText && manualText == null && version.trigger !== "manual_edit")
     changes.push("Your free-text edits were replaced by the updated scope (restore the previous version to get them back).");
-  return repo.saveVisitState(projectId, visitId, { facts, doc, manualText, text }, { ...version, changes });
+  return repo.saveVisitState({
+    projectId, visitId, trigger: version.trigger, facts, doc, manualText, text,
+    changes, input: version.input,
+  });
 }
 
 // =====================================================================
@@ -333,9 +334,10 @@ export function commit(
 // =====================================================================
 
 export async function generateVisit(projectId: string, visitId: string) {
-  const ctx = buildContext(projectId, visitId);
+  const ctx = await buildContext(projectId, visitId);
   if (!ctx.visit.fieldNotes.trim() && !ctx.evidence.length)
     throw new UserError("Add field notes or upload a CompanyCam PDF first.");
+  const corrections = await correctionInputs(projectId, visitId);
   const content: ContentBlock[] = [
     {
       type: "text",
@@ -344,21 +346,21 @@ export async function generateVisit(projectId: string, visitId: string) {
 <pm_field_notes>
 ${ctx.visit.fieldNotes || "(no notes for this visit)"}
 </pm_field_notes>
-${correctionInputs(projectId, visitId).length ? `\n<pm_corrections_so_far>\n${correctionInputs(projectId, visitId).join("\n")}\n</pm_corrections_so_far>` : ""}
+${corrections.length ? `\n<pm_corrections_so_far>\n${corrections.join("\n")}\n</pm_corrections_so_far>` : ""}
 
 Produce the structured facts for this visit.`,
     },
   ];
   const out = await structured({ schema: AnalysisOutput, system: visitSystem(ctx.visit.type), content, effort: "high", maxTokens: 48000 });
-  const facts = analysisToFacts(projectId, ctx, out);
+  const facts = await analysisToFacts(projectId, ctx, out);
   const prev = ctx.prior.at(-1)?.facts ?? null;
   const { facts: guarded } = applyGuards(facts, { pmText: ctx.pmText, corpusText: ctx.corpusText, previousFacts: prev, priorFacts: ctx.prior.map((v) => v.facts) });
-  syncProjectFromJob(projectId, guarded);
-  const draft = commit(projectId, visitId, guarded, { trigger: "generate", input: null, changes: ["Draft generated from notes and evidence."] });
+  await syncProjectFromJob(projectId, guarded);
+  const draft = await commit(projectId, visitId, guarded, { trigger: "generate", input: null, changes: ["Draft generated from notes and evidence."] });
   return { draft };
 }
 
-export function analysisToFacts(projectId: string, ctx: Pick<VisitContext, "locations" | "visit" | "evidence">, out: AnalysisOutput): VisitFacts {
+export async function analysisToFacts(projectId: string, ctx: Pick<VisitContext, "locations" | "visit" | "evidence">, out: AnalysisOutput): Promise<VisitFacts> {
   const existing = ctx.visit.facts;
   const locations = [...ctx.locations];
   const validEvidence = new Set(ctx.evidence.map((e) => e.id)); // project-scoped
@@ -368,12 +370,12 @@ export function analysisToFacts(projectId: string, ctx: Pick<VisitContext, "loca
     questions.push({ id: newId("q"), text, reason, locationId, status: "open", answer: null });
   };
 
-  const place = (ref: { locationId: string | null; floor: string | null; unit: string | null; room: string | null }) => {
+  const place = async (ref: { locationId: string | null; floor: string | null; unit: string | null; room: string | null }) => {
     if (!ref.room && !ref.locationId) return { locationId: null, needsLocation: false };
     const r = resolveLocation(ref, locations);
     if (r.kind === "existing") return { locationId: r.location.id, needsLocation: false };
     if (r.kind === "new") {
-      const loc = repo.insertLocation(projectId, { floor: r.floor, unit: r.unit, room: r.room });
+      const loc = await repo.insertLocation(projectId, { floor: r.floor, unit: r.unit, room: r.room });
       locations.push(loc);
       return { locationId: loc.id, needsLocation: false };
     }
@@ -384,10 +386,11 @@ export function analysisToFacts(projectId: string, ctx: Pick<VisitContext, "loca
     return { locationId: null, needsLocation: !!ref.room };
   };
 
-  const items: VisitFacts["items"] = out.items.map((i) => {
+  const items: VisitFacts["items"] = [];
+  for (const i of out.items) {
     const prior = i.existingItemId ? existing.items.find((x) => x.id === i.existingItemId) : undefined;
-    const { locationId, needsLocation } = place(i);
-    return {
+    const { locationId, needsLocation } = await place(i);
+    items.push({
       id: prior?.id ?? newId("it"),
       locationId,
       needsLocation,
@@ -400,17 +403,18 @@ export function analysisToFacts(projectId: string, ctx: Pick<VisitContext, "loca
       carriedFromVisitId: i.carriedFromVisitId,
       quantity: i.quantity,
       flags: [],
-    };
-  });
+    });
+  }
   // Explicit PM decisions (direct edits, accepted recommendations) are never dropped by a regenerate.
   for (const keep of existing.items.filter((x) => x.source === "manual_edit" || x.source === "pm_accepted"))
     if (!items.some((x) => x.id === keep.id)) items.push(keep);
 
-  const equipment = out.equipment.map((e) => {
+  const equipment: VisitFacts["equipment"] = [];
+  for (const e of out.equipment) {
     const prior = e.existingEquipmentId ? existing.equipment.find((x) => x.id === e.existingEquipmentId) : undefined;
-    return {
+    equipment.push({
       id: prior?.id ?? newId("eq"),
-      locationId: place(e).locationId,
+      locationId: (await place(e)).locationId,
       type: e.type,
       label: e.label,
       quantity: e.quantity,
@@ -419,8 +423,8 @@ export function analysisToFacts(projectId: string, ctx: Pick<VisitContext, "loca
       source: e.source,
       carriedForward: e.carriedForward,
       flags: [],
-    };
-  });
+    });
+  }
 
   for (const q of out.questions.slice(0, 5))
     addQuestion(q.text, q.reason, q.locationId && locations.some((l) => l.id === q.locationId) ? q.locationId : null);
@@ -428,9 +432,11 @@ export function analysisToFacts(projectId: string, ctx: Pick<VisitContext, "loca
   const decided = existing.recommendations.filter((r) => r.status !== "pending");
   const recommendations = [
     ...decided,
-    ...out.recommendations
-      .filter((r) => !decided.some((d) => norm(d.text) === norm(r.text)))
-      .map((r) => ({ id: newId("rec"), locationId: place(r).locationId, category: r.category, text: r.text, rationale: r.rationale, status: "pending" as const })),
+    ...(await Promise.all(
+      out.recommendations
+        .filter((r) => !decided.some((d) => norm(d.text) === norm(r.text)))
+        .map(async (r) => ({ id: newId("rec"), locationId: (await place(r)).locationId, category: r.category, text: r.text, rationale: r.rationale, status: "pending" as const }))
+    )),
   ];
 
   return {
@@ -446,13 +452,13 @@ export function analysisToFacts(projectId: string, ctx: Pick<VisitContext, "loca
 }
 
 /** The PM's latest explicit job facts update the project record. */
-function syncProjectFromJob(projectId: string, f: VisitFacts) {
+async function syncProjectFromJob(projectId: string, f: VisitFacts) {
   const j = f.jobInfo;
   const patch: Record<string, unknown> = {};
   for (const k of ["causeOfLoss", "sourceStatus", "lossType", "category", "waterClass", "productionDays", "equipmentDays", "accessRestrictions"] as const)
     if (j[k]) patch[k] = j[k];
   if (j.crewRaw) patch.crewRequirements = j.crewRaw;
-  if (Object.keys(patch).length) repo.updateProject(projectId, patch);
+  if (Object.keys(patch).length) await repo.updateProject(projectId, patch);
 }
 
 // =====================================================================
@@ -462,7 +468,7 @@ function syncProjectFromJob(projectId: string, f: VisitFacts) {
 export async function correctVisit(projectId: string, visitId: string, text: string) {
   const input = text.trim();
   if (!input) throw new UserError("Type or dictate a correction.");
-  const ctx = buildContext(projectId, visitId);
+  const ctx = await buildContext(projectId, visitId);
   const out = await structured({
     schema: CorrectionOutput,
     system: CORRECTION_SYSTEM,
@@ -475,13 +481,13 @@ export async function correctVisit(projectId: string, visitId: string, text: str
 
   const r = applyOps(ctx.visit.facts, out.ops, ctx.locations, projectId);
   if (r.clarification) return { kind: "clarify" as const, clarification: r.clarification };
-  for (const l of r.createdLocations) repo.insertLocation(projectId, l);
-  for (const l of r.renamedLocations) repo.updateLocation(projectId, l.id, l);
-  if (Object.keys(r.visitFieldUpdates).length) repo.updateVisitFields(projectId, visitId, r.visitFieldUpdates);
+  for (const l of r.createdLocations) await repo.insertLocation(projectId, l);
+  for (const l of r.renamedLocations) await repo.updateLocation(projectId, l.id, l);
+  if (Object.keys(r.visitFieldUpdates).length) await repo.updateVisitFields(projectId, visitId, r.visitFieldUpdates);
   const prev = ctx.prior.at(-1)?.facts ?? null;
   const { facts } = applyGuards(r.facts, { pmText: `${ctx.pmText}\n${input}`, corpusText: ctx.corpusText, previousFacts: prev, priorFacts: ctx.prior.map((v) => v.facts) });
-  syncProjectFromJob(projectId, facts);
-  const draft = commit(projectId, visitId, facts, {
+  await syncProjectFromJob(projectId, facts);
+  const draft = await commit(projectId, visitId, facts, {
     trigger: "correction",
     input,
     changes: r.changes.length ? r.changes : ["No changes were needed."],
@@ -494,8 +500,8 @@ export async function correctVisit(projectId: string, visitId: string, text: str
 // =====================================================================
 
 export async function runChecklist(projectId: string, visitId: string, templateId: string) {
-  const tpl = repo.getTemplate(templateId);
-  const ctx = buildContext(projectId, visitId);
+  const tpl = await repo.getTemplate(templateId);
+  const ctx = await buildContext(projectId, visitId);
   const out = await structured({
     schema: ChecklistOutput,
     system: CHECKLIST_SYSTEM,
@@ -510,7 +516,7 @@ export async function runChecklist(projectId: string, visitId: string, templateI
   });
   const entries = guardChecklist(tpl.items, out.entries, ctx.pmText);
   const facts = { ...ctx.visit.facts, checklist: { templateId, entries } };
-  const draft = commit(projectId, visitId, facts, { trigger: "checklist", input: tpl.name, changes: ["Checklist information updated."] });
+  const draft = await commit(projectId, visitId, facts, { trigger: "checklist", input: tpl.name, changes: ["Checklist information updated."] });
   return { draft };
 }
 
@@ -531,10 +537,10 @@ export function guardChecklist(
 }
 
 /** Checklist view for any visit type (rendered separately from the main scope). */
-export function checklistDoc(projectId: string, visit: Visit): { doc: ScopeDoc; text: string } | null {
+export async function checklistDoc(projectId: string, visit: Visit): Promise<{ doc: ScopeDoc; text: string } | null> {
   if (!visit.facts.checklist || visit.type === "checklist") return null;
-  const project = repo.getProject(projectId);
-  const doc = renderDoc({ project, visit: { ...visit, type: "checklist" }, facts: visit.facts, locations: repo.listLocations(projectId) }, visit.type);
+  const project = await repo.getProject(projectId);
+  const doc = renderDoc({ project, visit: { ...visit, type: "checklist" }, facts: visit.facts, locations: await repo.listLocations(projectId) }, visit.type);
   return { doc, text: docToText(doc) };
 }
 
@@ -542,8 +548,8 @@ export function checklistDoc(projectId: string, visit: Visit): { doc: ScopeDoc; 
 // Direct edits (no AI)
 // =====================================================================
 
-export function decideRecommendation(projectId: string, visitId: string, recId: string, action: "accept" | "reject", text?: string) {
-  const v = repo.getVisit(projectId, visitId);
+export async function decideRecommendation(projectId: string, visitId: string, recId: string, action: "accept" | "reject", text?: string) {
+  const v = await repo.getVisit(projectId, visitId);
   const facts = structuredClone(v.facts);
   const rec = facts.recommendations.find((r) => r.id === recId);
   if (!rec) throw new repo.NotFound("Recommendation not found");
@@ -566,13 +572,13 @@ export function decideRecommendation(projectId: string, visitId: string, recId: 
   return commit(projectId, visitId, facts, { trigger: "recommendation", input: null, changes: [`${action === "accept" ? "Accepted" : "Rejected"}: ${text?.trim() || rec.text}`] });
 }
 
-export function editItem(
+export async function editItem(
   projectId: string,
   visitId: string,
   itemId: string,
   patch: { text?: string; status?: string; category?: string; locationId?: string | null; remove?: boolean },
 ) {
-  const v = repo.getVisit(projectId, visitId);
+  const v = await repo.getVisit(projectId, visitId);
   const facts = structuredClone(v.facts);
   const idx = facts.items.findIndex((i) => i.id === itemId);
   if (idx < 0) throw new repo.NotFound("Item not found");
@@ -586,7 +592,7 @@ export function editItem(
     if (patch.status && (ITEM_STATUSES as readonly string[]).includes(patch.status)) item.status = patch.status as ItemStatus;
     if (patch.category && (CATEGORIES as readonly string[]).includes(patch.category)) item.category = patch.category as Category;
     if (patch.locationId !== undefined) {
-      if (patch.locationId && !repo.listLocations(projectId).some((l) => l.id === patch.locationId)) throw new repo.NotFound("Room not found");
+      if (patch.locationId && !(await repo.listLocations(projectId)).some((l) => l.id === patch.locationId)) throw new repo.NotFound("Room not found");
       item.locationId = patch.locationId;
       item.needsLocation = false;
     }
@@ -598,10 +604,10 @@ export function editItem(
   return commit(projectId, visitId, facts, { trigger: "manual_edit", input: null, changes: [change] });
 }
 
-export function addItem(projectId: string, visitId: string, input: { locationId: string | null; category: string; text: string; status: string }) {
-  const v = repo.getVisit(projectId, visitId);
+export async function addItem(projectId: string, visitId: string, input: { locationId: string | null; category: string; text: string; status: string }) {
+  const v = await repo.getVisit(projectId, visitId);
   if (!input.text?.trim()) throw new UserError("Bullet text is required.");
-  if (input.locationId && !repo.listLocations(projectId).some((l) => l.id === input.locationId)) throw new repo.NotFound("Room not found");
+  if (input.locationId && !(await repo.listLocations(projectId)).some((l) => l.id === input.locationId)) throw new repo.NotFound("Room not found");
   const facts = structuredClone(v.facts);
   facts.items.push({
     id: newId("it"),
@@ -620,8 +626,8 @@ export function addItem(projectId: string, visitId: string, input: { locationId:
   return commit(projectId, visitId, facts, { trigger: "manual_edit", input: null, changes: [`Added "${input.text.trim()}"`] });
 }
 
-export function editEquipment(projectId: string, visitId: string, eqId: string, patch: { quantity?: number | null; status?: string; remove?: boolean }) {
-  const v = repo.getVisit(projectId, visitId);
+export async function editEquipment(projectId: string, visitId: string, eqId: string, patch: { quantity?: number | null; status?: string; remove?: boolean }) {
+  const v = await repo.getVisit(projectId, visitId);
   const facts = structuredClone(v.facts);
   const idx = facts.equipment.findIndex((e) => e.id === eqId);
   if (idx < 0) throw new repo.NotFound("Equipment not found");
@@ -637,18 +643,18 @@ export function editEquipment(projectId: string, visitId: string, eqId: string, 
   return commit(projectId, visitId, facts, { trigger: "manual_edit", input: null, changes: [patch.remove ? "Removed equipment entry" : "Edited equipment"] });
 }
 
-export function setManualText(projectId: string, visitId: string, text: string | null) {
-  const v = repo.getVisit(projectId, visitId);
+export async function setManualText(projectId: string, visitId: string, text: string | null) {
+  const v = await repo.getVisit(projectId, visitId);
   return commit(projectId, visitId, v.facts, { trigger: "manual_edit", input: null, changes: [text ? "Edited scope text directly." : "Cleared text edits."] }, text?.trim() ? text : null);
 }
 
-export function restoreDraft(projectId: string, visitId: string, draftId: string) {
-  const s = repo.getDraftState(projectId, visitId, draftId);
+export async function restoreDraft(projectId: string, visitId: string, draftId: string) {
+  const s = await repo.getDraftState(projectId, visitId, draftId);
   return commit(projectId, visitId, s.facts, { trigger: "restore", input: `Restored version ${s.version}`, changes: [`Restored version ${s.version}.`] }, s.manualText);
 }
 
-export function rerender(projectId: string, visitId: string) {
-  const v = repo.getVisit(projectId, visitId);
+export async function rerender(projectId: string, visitId: string) {
+  const v = await repo.getVisit(projectId, visitId);
   return commit(projectId, visitId, v.facts, { trigger: "manual_edit", input: null, changes: ["Re-rendered after room changes."] }, v.manualText);
 }
 
@@ -668,14 +674,14 @@ export async function ingestManual(file: { name: string; bytes: Uint8Array }) {
   const text = pdf ? (await extractPageTexts(file.bytes)).join("\n\n") : Buffer.from(file.bytes).toString("utf8");
   if (!text.trim()) throw new UserError("No readable text in that manual (scanned manuals are not supported yet).");
   if (text.length > MAX_MANUAL_CHARS) throw new UserError("Manual is too long to process in one pass (over 600,000 characters). Split it into sections.");
-  repo.createManual({ id, name: file.name.replace(/\.[a-z]+$/i, "").slice(0, 120), filename: file.name.slice(0, 200), storedPath, text });
+  await repo.createManual({ id, name: file.name.replace(/\.[a-z]+$/i, "").slice(0, 120), filename: file.name.slice(0, 200), storedPath, text });
   await extractManualRules(id);
   return id;
 }
 
 export async function extractManualRules(id: string) {
-  const { manual, text } = repo.getManualText(id);
-  const existing = repo.listManuals().filter((m) => m.id !== id).flatMap((m) => m.rules.map((r) => ({ ...r, manualId: m.id, manual: m.name })));
+  const { manual, text } = await repo.getManualText(id);
+  const existing = (await repo.listManuals()).filter((m) => m.id !== id).flatMap((m) => m.rules.map((r) => ({ ...r, manualId: m.id, manual: m.name })));
   try {
     const out = await structured({
       schema: ManualRulesOutput,
@@ -690,15 +696,15 @@ export async function extractManualRules(id: string) {
       maxTokens: 32000,
     });
     const rules = out.rules.map((r, i) => ({ id: `${id}_r${i + 1}`, topic: r.topic, rule: r.rule }));
-    repo.setManualRules(id, rules, "ready");
-    repo.addConflicts(
+    await repo.setManualRules(id, rules, "ready");
+    await repo.addConflicts(
       out.conflicts.map((c) => ({
         description: `${manual.name}: ${c.description}`,
         manualIds: [id, ...new Set(existing.filter((r) => c.conflictingRuleIds.includes(r.id)).map((r) => r.manualId))],
       })),
     );
   } catch (e) {
-    repo.setManualRules(id, [], "failed", e instanceof Error ? e.message : String(e));
+    await repo.setManualRules(id, [], "failed", e instanceof Error ? e.message : String(e));
     throw e;
   }
 }
@@ -707,8 +713,8 @@ export async function extractManualRules(id: string) {
 // Demo data (clearly labeled, fictional)
 // =====================================================================
 
-export function createDemoProject() {
-  const p = repo.createProject(
+export async function createDemoProject() {
+  const p = await repo.createProject(
     {
       name: "DEMO — 120 Sample Avenue (fictional)",
       address: "120 Sample Avenue, New York, NY (DEMO — not a real job)",
@@ -724,10 +730,10 @@ export function createDemoProject() {
     true,
   );
   const L = (floor: string | null, unit: string | null, room: string) => repo.insertLocation(p.id, { floor, unit, room });
-  const living = L("19", "19C", "Living Room");
-  const closet19 = L("19", "19C", "Closet");
-  const closet20 = L("20", "20A", "Closet");
-  const hall = L("20", null, "Common Hallway");
+  const living = await L("19", "19C", "Living Room");
+  const closet19 = await L("19", "19C", "Closet");
+  const closet20 = await L("20", "20A", "Closet");
+  const hall = await L("20", null, "Common Hallway");
   const it = (locationId: string | null, category: Category, text: string, status: ItemStatus = "reported", extra: Partial<VisitFacts["items"][number]> = {}) => ({
     id: newId("it"), locationId, needsLocation: false, category, text, status, source: "pm" as const, evidenceIds: [],
     carriedForward: false, carriedFromVisitId: null, quantity: null, flags: [], ...extra,
@@ -738,14 +744,14 @@ export function createDemoProject() {
   const d = new Date();
   const ymd = (offset: number) => todayNY(new Date(d.getTime() + offset * 86400000));
 
-  const v1 = repo.createVisit(p.id, { type: "initial_mitigation", visitDate: ymd(-1) });
-  repo.updateVisitFields(p.id, v1.id, {
+  const v1 = await repo.createVisit(p.id, { type: "initial_mitigation", visitDate: ymd(-1) });
+  await repo.updateVisitFields(p.id, v1.id, {
     fieldNotes:
       "DEMO NOTES. Pipe burst above 19C, source repaired, Cat 2. Living room hardwood and walls wet. Closet carpet and wall wet in 19C. 20A closet wall wet. 20th floor hallway carpet wet along the wall. Drying only. CC+2. 2 air movers in 19C living room, 1 in each closet, 1 dehumidifier in 19C living room. 2 air movers in the 20th floor hallway.",
   });
   const f1: VisitFacts = {
-    ...repo.getVisit(p.id, v1.id).facts,
-    jobInfo: { ...repo.getVisit(p.id, v1.id).facts.jobInfo, crewRaw: "CC+2", crewChiefs: 1, subcontractors: 2, category: "Cat 2", sourceStatus: "repaired" },
+    ...(await repo.getVisit(p.id, v1.id)).facts,
+    jobInfo: { ...(await repo.getVisit(p.id, v1.id)).facts.jobInfo, crewRaw: "CC+2", crewChiefs: 1, subcontractors: 2, category: "Cat 2", sourceStatus: "repaired" },
     directives: { dryingOnly: true, carryForwardConfirmed: false },
     items: [
       it(living.id, "condition", "Hardwood flooring and walls are wet"),
@@ -759,10 +765,10 @@ export function createDemoProject() {
     ],
     equipment: [eq(living.id, "air_mover", 2, "installed"), eq(living.id, "dehumidifier", 1, "installed"), eq(closet19.id, "air_mover", 1, "installed"), eq(closet20.id, "air_mover", 1, "installed"), eq(hall.id, "air_mover", 2, "installed")],
   };
-  commit(p.id, v1.id, f1, { trigger: "generate", input: null, changes: ["Demo data (fictional)."] });
+  await commit(p.id, v1.id, f1, { trigger: "generate", input: null, changes: ["Demo data (fictional)."] });
 
-  const v2 = repo.createVisit(p.id, { type: "daily_monitoring", visitDate: ymd(0) });
-  repo.updateVisitFields(p.id, v2.id, { fieldNotes: "DEMO NOTES. Same as yesterday except the 20th floor hallway is dry. 19C closet carpet is dry, wall still elevated." });
+  const v2 = await repo.createVisit(p.id, { type: "daily_monitoring", visitDate: ymd(0) });
+  await repo.updateVisitFields(p.id, v2.id, { fieldNotes: "DEMO NOTES. Same as yesterday except the 20th floor hallway is dry. 19C closet carpet is dry, wall still elevated." });
   const f2: VisitFacts = {
     ...f1,
     directives: { dryingOnly: true, carryForwardConfirmed: true },
@@ -778,6 +784,6 @@ export function createDemoProject() {
     ],
     equipment: f1.equipment.map((e) => ({ ...e, id: newId("eq"), status: "operating" as const, carriedForward: true, source: "prior_visit" as const })),
   };
-  commit(p.id, v2.id, f2, { trigger: "generate", input: null, changes: ["Demo data (fictional)."] });
+  await commit(p.id, v2.id, f2, { trigger: "generate", input: null, changes: ["Demo data (fictional)."] });
   return p;
 }
