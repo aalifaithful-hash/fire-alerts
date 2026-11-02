@@ -60,11 +60,17 @@ export function uploadWithProgress<T>(url: string, form: FormData, onProgress: (
  * Upload a large PDF directly to Vercel Blob storage. The server ingests the
  * PDF from Blob when the upload completes. Returns the same { document }
  * shape the caller expects.
+ *
+ * Note: `access: "public"` is required by the @vercel/blob client types, but
+ * when using handleUploadUrl the server's handleUpload controls the actual
+ * access. The server does not specify access, so the private
+ * "field-scope-uploads" store default keeps blobs private.
  */
 async function uploadPdfViaBlob<T>(pid: string, file: File, onProgress: (pct: number) => void): Promise<T> {
   const { upload } = await import("@vercel/blob/client");
   onProgress(0);
   await upload(`projects/${pid}/${Date.now()}.pdf`, file, {
+    access: "public",
     handleUploadUrl: `/api/projects/${pid}/documents/blob`,
     clientPayload: file.name,
   });
