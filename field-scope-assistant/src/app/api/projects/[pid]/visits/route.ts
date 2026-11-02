@@ -9,5 +9,5 @@ export const POST = route<P>(async (req, { pid }) => {
   const b = await body<{ type?: string; visitDate?: string; appointmentTime?: string }>(req);
   if (!VISIT_TYPES.includes(b.type as VisitType)) throw new UserError("Choose a visit type.");
   const date = b.visitDate && /^\d{4}-\d{2}-\d{2}$/.test(b.visitDate) ? b.visitDate : todayNY();
-  return { visit: repo.createVisit(pid, { type: b.type as VisitType, visitDate: date, appointmentTime: b.appointmentTime || null }) };
+  return { visit: await repo.createVisit(pid, { type: b.type as VisitType, visitDate: date, appointmentTime: b.appointmentTime || null }) };
 });
