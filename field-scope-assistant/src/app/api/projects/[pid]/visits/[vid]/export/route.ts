@@ -9,9 +9,9 @@ type P = { pid: string; vid: string };
 export const GET = route<P>(async (req, { pid, vid }) => {
   const format = req.nextUrl.searchParams.get("format") ?? "pdf";
   const wantChecklist = req.nextUrl.searchParams.get("checklist") === "1";
-  const visit = repo.getVisit(pid, vid);
-  const project = repo.getProject(pid);
-  const cl = wantChecklist ? checklistDoc(pid, visit) : null;
+  const visit = await repo.getVisit(pid, vid);
+  const project = await repo.getProject(pid);
+  const cl = wantChecklist ? await checklistDoc(pid, visit) : null;
   if (wantChecklist && !cl) throw new UserError("No checklist information for this visit yet.");
   if (!cl && !visit.doc && !visit.manualText) throw new UserError("Generate a draft first.");
   const lines = cl ? docLines(cl.doc) : visit.manualText ? textLines(visit.manualText) : docLines(visit.doc!);
