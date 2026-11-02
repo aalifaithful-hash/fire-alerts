@@ -65,7 +65,6 @@ async function uploadPdfViaBlob<T>(pid: string, file: File, onProgress: (pct: nu
   const { upload } = await import("@vercel/blob/client");
   onProgress(0);
   await upload(`projects/${pid}/${Date.now()}.pdf`, file, {
-    access: "private",
     handleUploadUrl: `/api/projects/${pid}/documents/blob`,
     clientPayload: file.name,
   });
