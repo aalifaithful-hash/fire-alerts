@@ -5,10 +5,10 @@ import { extractManualRules } from "@/lib/service";
 type P = { mid: string };
 export const maxDuration = 300;
 export const DELETE = route<P>(async (_req, { mid }) => {
-  repo.deleteManual(mid);
+  await repo.deleteManual(mid);
   return { ok: true };
 });
 export const POST = route<P>(async (_req, { mid }) => {
   await extractManualRules(mid);
-  return { manuals: repo.listManuals(), conflicts: repo.listConflicts() };
+  return { manuals: await repo.listManuals(), conflicts: await repo.listConflicts() };
 });
