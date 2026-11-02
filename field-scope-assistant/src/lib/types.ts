@@ -61,6 +61,7 @@ export interface Visit {
   facts: VisitFacts;
   doc: import("./schemas").ScopeDoc | null;
   manualText: string | null; // PM free-text override of the rendered scope
+  text: string;
   createdAt: string;
   updatedAt: string;
 }
@@ -73,5 +74,8 @@ export interface DraftVersion {
   input: string | null;
   changes: string[];
   text: string;
+  facts?: VisitFacts;
+  doc?: import("./schemas").ScopeDoc | null;
+  manualText?: string | null;
   createdAt: string;
 }
