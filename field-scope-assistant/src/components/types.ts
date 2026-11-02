@@ -1,11 +1,11 @@
 import type { Location, ScopeDoc, VisitType } from "@/lib/schemas";
 import type { DraftVersion, Project, Visit } from "@/lib/types";
-import type { ChecklistTemplate, DocumentRec, Evidence } from "@/lib/repo";
+import type { ChecklistTemplate, Document, Evidence } from "@/lib/repo";
 
 export interface WorkspaceData {
   project: Project;
   locations: Location[];
-  documents: (DocumentRec & { progress: { total: number; done: number; failed: number; pending: number; errors: string[] } })[];
+  documents: (Document & { progress: { total: number; done: number; failed: number; pending: number; errors: string[] } })[];
   evidence: Evidence[];
   visits: { id: string; type: VisitType; visitDate: string; appointmentTime: string | null; accessOutcome: string | null; hasDraft: boolean; updatedAt: string }[];
   templates: ChecklistTemplate[];
