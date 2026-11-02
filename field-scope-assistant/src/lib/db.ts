@@ -13,10 +13,10 @@ if (!connectionString) {
   );
 }
 
-let tag: ReturnType<typeof neon> | null = null;
+let neonClient: ReturnType<typeof neon> | null = null;
 function getTag() {
-  if (!tag) tag = neon(connectionString as string);
-  return tag;
+  if (!neonClient) neonClient = neon(connectionString as string);
+  return neonClient;
 }
 
 export const DATA_DIR =
