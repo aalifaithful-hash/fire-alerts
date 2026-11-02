@@ -1,7 +1,12 @@
 "use client";
 
 export class ApiError extends Error {
-  constructor(message: string, public status: number, public code?: string, public retryable?: boolean) {
+  constructor(
+    message: string,
+    public status: number,
+    public code?: string,
+    public retryable?: boolean,
+  ) {
     super(message);
   }
 }
@@ -21,7 +26,8 @@ export async function api<T = unknown>(url: string, opts: { method?: string; bod
   return data as T;
 }
 
-/** Upload with progress (fetch has no upload progress events).
+/**
+ * Upload with progress (fetch has no upload progress events).
  *
  * For project document uploads, files larger than ~4 MB are sent straight to
  * Vercel Blob storage, bypassing the ~4.5 MB serverless-function
@@ -59,13 +65,15 @@ async function uploadPdfViaBlob<T>(pid: string, file: File, onProgress: (pct: nu
   const { upload } = await import("@vercel/blob/client");
   onProgress(0);
   await upload(`projects/${pid}/${Date.now()}.pdf`, file, {
-
+    access: "private",
     handleUploadUrl: `/api/projects/${pid}/documents/blob`,
     clientPayload: file.name,
   });
   onProgress(100);
   // The server ingests the PDF in onUploadCompleted before upload() resolves.
-  const ws = await api<{ documents: Array<{ id: string; filename: string; scannedPages: number; pageCount: number }> }>(`/api/projects/${pid}`);
+  const ws = await api<{ documents: Array<{ id: string; filename: string; scannedPages: number; pageCount: number }> }>(
+    `/api/projects/${pid}`,
+  );
   const doc = ws.documents.find((d) => d.filename === file.name) ?? ws.documents[ws.documents.length - 1];
   if (!doc) throw new ApiError("Upload completed but the document was not found. Please reload.", 500);
   return { document: doc } as T;
