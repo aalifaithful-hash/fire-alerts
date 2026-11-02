@@ -64,12 +64,12 @@ export async function getProject(id: string): Promise<Project> {
   return toProject(r);
 }
 
-export async function createProject(input: Record<string, unknown>): Promise<Project> {
+export async function createProject(input: Record<string, unknown>, isDemo = false): Promise<Project> {
   const clean = cleanProjectInput(input);
   const id = newId("prj");
   const now = nowIso();
   await query`INSERT INTO projects (id, data, is_demo, created_at, updated_at)
-    VALUES (${id}, ${JSON.stringify(clean)}, 0, ${now}, ${now})`;
+    VALUES (${id}, ${JSON.stringify(clean)}, ${isDemo ? 1 : 0}, ${now}, ${now})`;
   return getProject(id);
 }
 
@@ -169,14 +169,13 @@ function toDocument(r: DocumentRow): Document {
 
 export async function createDocument(
   projectId: string,
-  input: { filename: string; storedPath: string; size: number; pageCount: number }
+  input: { id: string; filename: string; storedPath: string; size: number; pageCount: number }
 ): Promise<Document> {
   await getProject(projectId);
-  const id = newId("doc");
   const now = nowIso();
   await query`INSERT INTO documents (id, project_id, filename, stored_path, size, page_count, status, created_at)
-    VALUES (${id}, ${projectId}, ${input.filename}, ${input.storedPath}, ${input.size}, ${input.pageCount}, 'uploaded', ${now})`;
-  const row = await queryOne<DocumentRow>`SELECT * FROM documents WHERE id = ${id}`;
+    VALUES (${input.id}, ${projectId}, ${input.filename}, ${input.storedPath}, ${input.size}, ${input.pageCount}, 'uploaded', ${now})`;
+  const row = await queryOne<DocumentRow>`SELECT * FROM documents WHERE id = ${input.id}`;
   if (!row) throw new Error("Failed to create document.");
   return toDocument(row);
 }
@@ -214,9 +213,14 @@ export async function savePages(documentId: string, pages: { page: number; text:
   );
 }
 
-export async function getPages(documentId: string): Promise<{ page: number; text: string }[]> {
-  const rows = await query<{ page: number; text: string }>`SELECT page, text FROM doc_pages WHERE document_id = ${documentId} ORDER BY page ASC`;
-  return rows;
+export type DocPage = { page: number; text: string; charCount: number };
+
+export async function getPages(documentId: string, startPage?: number, endPage?: number): Promise<DocPage[]> {
+  if (startPage === undefined || endPage === undefined) {
+    return query<DocPage>`SELECT page, text, char_count AS "charCount" FROM doc_pages WHERE document_id = ${documentId} ORDER BY page ASC`;
+  }
+  return query<DocPage>`SELECT page, text, char_count AS "charCount" FROM doc_pages
+    WHERE document_id = ${documentId} AND page >= ${startPage} AND page <= ${endPage} ORDER BY page ASC`;
 }
 
 export type Batch = {
@@ -235,15 +239,18 @@ function toBatch(r: BatchRow): Batch {
 }
 export const MAX_BATCH_ATTEMPTS = 3;
 
+export type BatchRange = { startPage: number; endPage: number } | [number, number];
+
 export async function createBatches(
   projectId: string,
   documentId: string,
-  ranges: { startPage: number; endPage: number }[]
+  ranges: BatchRange[]
 ): Promise<Batch[]> {
   const now = nowIso();
-  const ids = ranges.map(() => newId("bat"));
+  const norm = ranges.map((r) => (Array.isArray(r) ? { startPage: r[0], endPage: r[1] } : r));
+  const ids = norm.map(() => newId("bat"));
   await Promise.all(
-    ranges.map((r, i) =>
+    norm.map((r, i) =>
       query`INSERT INTO batches (id, document_id, project_id, start_page, end_page, status, attempts, updated_at)
         VALUES (${ids[i]}, ${documentId}, ${projectId}, ${r.startPage}, ${r.endPage}, 'pending', 0, ${now})`
     )
@@ -253,8 +260,13 @@ export async function createBatches(
 }
 
 /** Atomically claims the next pending batch (single statement, SKIP LOCKED). */
-export async function claimNextBatch(projectId: string, documentId: string): Promise<Batch | null> {
+export async function claimNextBatch(projectId: string, documentId: string, retryFailed = false): Promise<Batch | null> {
   const now = nowIso();
+  if (retryFailed) {
+    // User-initiated retry: reset failed batches so they are attempted again.
+    await query`UPDATE batches SET status = 'pending', attempts = 0, updated_at = ${now}
+      WHERE document_id = ${documentId} AND project_id = ${projectId} AND status = 'failed'`;
+  }
   // Release batches stuck in processing for > 10 minutes.
   await query`UPDATE batches SET status = 'pending', updated_at = ${now}
     WHERE document_id = ${documentId} AND project_id = ${projectId}
@@ -278,8 +290,12 @@ export async function claimNextBatch(projectId: string, documentId: string): Pro
   return toBatch(rows[0]);
 }
 
-export async function finishBatch(batchId: string, status: "done" | "failed", error?: string | null): Promise<void> {
-  await query`UPDATE batches SET status = ${status}, error = ${error ?? null}, updated_at = ${nowIso()} WHERE id = ${batchId}`;
+export async function finishBatch(batchId: string, status: "done" | "failed", error?: string | null, attempts?: number): Promise<void> {
+  if (attempts === undefined) {
+    await query`UPDATE batches SET status = ${status}, error = ${error ?? null}, updated_at = ${nowIso()} WHERE id = ${batchId}`;
+  } else {
+    await query`UPDATE batches SET status = ${status}, error = ${error ?? null}, attempts = ${attempts}, updated_at = ${nowIso()} WHERE id = ${batchId}`;
+  }
 }
 
 export async function batchProgress(projectId: string, documentId: string): Promise<{ total: number; done: number; failed: number; processing: number }> {
@@ -477,12 +493,13 @@ export async function deleteVisit(projectId: string, id: string): Promise<void> 
 
 // ---------------- templates ----------------
 
-export type ChecklistTemplate = { id: string; name: string; visitTypes: VisitType[]; items: string[]; isStarter: boolean; createdAt: string };
+export type ChecklistItem = { id: string; label: string };
+export type ChecklistTemplate = { id: string; name: string; visitTypes: VisitType[]; items: ChecklistItem[]; isStarter: boolean; createdAt: string };
 type TemplateRow = { id: string; name: string; visit_types: string; items: string; is_starter: number; created_at: string };
 function toTemplate(r: TemplateRow): ChecklistTemplate {
   return {
     id: r.id, name: r.name, visitTypes: j<VisitType[]>(r.visit_types, []),
-    items: j<string[]>(r.items, []), isStarter: !!r.is_starter, createdAt: r.created_at,
+    items: j<ChecklistItem[]>(r.items, []), isStarter: !!r.is_starter, createdAt: r.created_at,
   };
 }
 
@@ -502,9 +519,20 @@ export async function saveTemplate(t: { id?: string; name: string; visitTypes: V
   if (!t.name.trim()) throw new Error("Template name is required.");
   const id = t.id ?? newId("tpl");
   const now = nowIso();
+  // Preserve item ids for labels that already existed, so saved checklist
+  // entries keep pointing at the right items when a template is edited.
+  let existing: ChecklistTemplate | null = null;
+  if (t.id) {
+    try { existing = await getTemplate(id); } catch { existing = null; }
+  }
+  const items: ChecklistItem[] = t.items.map((label) => {
+    const keep = existing?.items.find((x) => x.label === label);
+    return { id: keep?.id ?? newId("sti"), label };
+  });
   await query`INSERT INTO checklist_templates (id, name, visit_types, items, is_starter, created_at)
-    VALUES (${id}, ${t.name.trim()}, ${JSON.stringify(t.visitTypes)}, ${JSON.stringify(t.items)}, 0, ${now})
-    ON CONFLICT(id) DO UPDATE SET name = EXCLUDED.name, visit_types = EXCLUDED.visit_types, items = EXCLUDED.items, is_starter = EXCLUDED.is_starter`;
+    VALUES (${id}, ${t.name.trim()}, ${JSON.stringify(t.visitTypes)}, ${JSON.stringify(items)}, 0, ${now})
+    ON CONFLICT(id) DO UPDATE SET name = EXCLUDED.name, visit_types = EXCLUDED.visit_types,
+      items = EXCLUDED.items, is_starter = checklist_templates.is_starter`;
   return getTemplate(id);
 }
 
@@ -563,16 +591,17 @@ export async function ensureStarterTemplates(): Promise<void> {
   await Promise.all(
     STARTER_TEMPLATES.map((t) =>
       query`INSERT INTO checklist_templates (id, name, visit_types, items, is_starter, created_at)
-        VALUES (${newId("tpl")}, ${t.name}, ${JSON.stringify(t.visitTypes)}, ${JSON.stringify(t.items)}, 1, ${now})`
+        VALUES (${newId("tpl")}, ${t.name}, ${JSON.stringify(t.visitTypes)}, ${JSON.stringify(t.items.map((label) => ({ id: newId("sti"), label })))}, 1, ${now})`
     )
   );
 }
 
 // ---------------- manuals ----------------
 
+export type ManualRule = { id: string; topic: string; rule: string };
 export type Manual = {
   id: string; name: string; filename: string; storedPath: string;
-  status: string; error: string | null; createdAt: string;
+  rules: ManualRule[]; status: string; error: string | null; createdAt: string;
 };
 type ManualRow = {
   id: string; name: string; filename: string; stored_path: string;
@@ -581,32 +610,32 @@ type ManualRow = {
 function toManual(r: ManualRow): Manual {
   return {
     id: r.id, name: r.name, filename: r.filename, storedPath: r.stored_path,
+    rules: j<ManualRule[]>(r.rules, []),
     status: r.status, error: r.error, createdAt: r.created_at,
   };
 }
 
 export async function listManuals(): Promise<Manual[]> {
-  const rows = await query<ManualRow>`SELECT id, name, filename, stored_path, status, error, created_at FROM manuals ORDER BY created_at DESC`;
+  const rows = await query<ManualRow>`SELECT id, name, filename, stored_path, rules, status, error, created_at FROM manuals ORDER BY created_at DESC`;
   return rows.map(toManual);
 }
 
-export async function getManualText(id: string): Promise<{ name: string; text: string }> {
-  const r = await queryOne<{ name: string; text: string }>`SELECT name, text FROM manuals WHERE id = ${id}`;
+export async function getManualText(id: string): Promise<{ manual: Manual; text: string }> {
+  const r = await queryOne<ManualRow>`SELECT * FROM manuals WHERE id = ${id}`;
   if (!r) throw new NotFound("Manual not found.");
-  return r;
+  return { manual: toManual(r), text: r.text };
 }
 
-export async function createManual(input: { name: string; filename: string; storedPath: string; text: string }): Promise<Manual> {
-  const id = newId("man");
+export async function createManual(input: { id: string; name: string; filename: string; storedPath: string; text: string }): Promise<Manual> {
   const now = nowIso();
   await query`INSERT INTO manuals (id, name, filename, stored_path, text, rules, status, created_at)
-    VALUES (${id}, ${input.name}, ${input.filename}, ${input.storedPath}, ${input.text}, '[]', 'uploaded', ${now})`;
-  const row = await queryOne<ManualRow>`SELECT * FROM manuals WHERE id = ${id}`;
+    VALUES (${input.id}, ${input.name}, ${input.filename}, ${input.storedPath}, ${input.text}, '[]', 'uploaded', ${now})`;
+  const row = await queryOne<ManualRow>`SELECT * FROM manuals WHERE id = ${input.id}`;
   if (!row) throw new Error("Failed to create manual.");
   return toManual(row);
 }
 
-export async function setManualRules(id: string, rules: string[], status: string, error?: string | null): Promise<void> {
+export async function setManualRules(id: string, rules: ManualRule[], status: string, error?: string | null): Promise<void> {
   await query`UPDATE manuals SET rules = ${JSON.stringify(rules)}, status = ${status}, error = ${error ?? null} WHERE id = ${id}`;
 }
 
