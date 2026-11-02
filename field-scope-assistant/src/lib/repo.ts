@@ -86,7 +86,6 @@ export async function touchProject(id: string): Promise<void> {
 
 export async function deleteProject(id: string): Promise<void> {
   await getProject(id);
-  // ON DELETE CASCADE removes child rows; explicit deletes kept for safety.
   await query`DELETE FROM projects WHERE id = ${id}`;
   await query`DELETE FROM drafts WHERE project_id = ${id}`;
   await query`DELETE FROM batches WHERE project_id = ${id}`;
@@ -95,9 +94,9 @@ export async function deleteProject(id: string): Promise<void> {
 
 // ---------------- locations ----------------
 
-type LocationRow = { id: string; floor: string | null; unit: string | null; room: string; sort: number };
+type LocationRow = { id: string; project_id: string; floor: string | null; unit: string | null; room: string; sort: number };
 function toLocation(r: LocationRow): Location {
-  return { id: r.id, floor: r.floor, unit: r.unit, room: r.room, sort: r.sort };
+  return { id: r.id, projectId: r.project_id, floor: r.floor, unit: r.unit, room: r.room, sort: r.sort };
 }
 
 export async function listLocations(projectId: string): Promise<Location[]> {
@@ -137,24 +136,20 @@ export async function updateLocation(
 export async function deleteLocation(projectId: string, id: string): Promise<void> {
   const deleted = await query<{ id: string }>`DELETE FROM locations WHERE id = ${id} AND project_id = ${projectId} RETURNING id`;
   if (!deleted.length) throw new NotFound("Room not found.");
-  const visits = await query<{ id: string; facts: string }>`SELECT id, facts FROM visits WHERE project_id = ${projectId}`;
-  const updates: unknown[] = [];
-  for (const v of visits) {
-    const facts = j<VisitFacts>(v.facts, emptyFacts());
-    const rooms = facts.property.rooms.filter((r) => r.locationId !== id);
-    if (rooms.length !== facts.property.rooms.length) {
-      const next: VisitFacts = { ...facts, property: { ...facts.property, rooms } };
-      updates.push(tag`UPDATE visits SET facts = ${JSON.stringify(next)} WHERE id = ${v.id}`);
-    }
-  }
-  if (updates.length) await tx(updates);
 }
 
 // ---------------- documents / batches ----------------
 
 export type Document = {
-  id: string; projectId: string; filename: string; storedPath: string;
-  size: number; pageCount: number; status: string; error: string | null; createdAt: string;
+  id: string;
+  projectId: string;
+  filename: string;
+  storedPath: string;
+  size: number;
+  pageCount: number;
+  status: string;
+  error: string | null;
+  createdAt: string;
 };
 type DocumentRow = {
   id: string; project_id: string; filename: string; stored_path: string;
@@ -163,7 +158,7 @@ type DocumentRow = {
 function toDocument(r: DocumentRow): Document {
   return {
     id: r.id, projectId: r.project_id, filename: r.filename, storedPath: r.stored_path,
-    size: r.size, pageCount: r.page_count, status: r.status, error: r.error, createdAt: r.created_at,
+    size: Number(r.size), pageCount: Number(r.page_count), status: r.status, error: r.error, createdAt: r.created_at,
   };
 }
 
@@ -171,10 +166,9 @@ export async function createDocument(
   projectId: string,
   input: { id: string; filename: string; storedPath: string; size: number; pageCount: number }
 ): Promise<Document> {
-  await getProject(projectId);
   const now = nowIso();
-  await query`INSERT INTO documents (id, project_id, filename, stored_path, size, page_count, status, created_at)
-    VALUES (${input.id}, ${projectId}, ${input.filename}, ${input.storedPath}, ${input.size}, ${input.pageCount}, 'uploaded', ${now})`;
+  await query`INSERT INTO documents (id, project_id, filename, stored_path, size, page_count, status, error, created_at)
+    VALUES (${input.id}, ${projectId}, ${input.filename}, ${input.storedPath}, ${input.size}, ${input.pageCount}, 'pending', NULL, ${now})`;
   const row = await queryOne<DocumentRow>`SELECT * FROM documents WHERE id = ${input.id}`;
   if (!row) throw new Error("Failed to create document.");
   return toDocument(row);
@@ -192,152 +186,139 @@ export async function listDocuments(projectId: string): Promise<Document[]> {
 }
 
 export async function setDocumentStatus(projectId: string, id: string, status: string, error?: string | null): Promise<void> {
-  await getDocument(projectId, id);
-  await query`UPDATE documents SET status = ${status}, error = ${error ?? null} WHERE id = ${id}`;
+  await query`UPDATE documents SET status = ${status}, error = ${error ?? null} WHERE id = ${id} AND project_id = ${projectId}`;
 }
 
 export async function deleteDocument(projectId: string, id: string): Promise<void> {
   const d = await getDocument(projectId, id);
   await query`DELETE FROM documents WHERE id = ${id} AND project_id = ${projectId}`;
-  rmSync(d.storedPath, { force: true });
-  await touchProject(projectId);
+  if (d.storedPath) rmSync(d.storedPath, { force: true });
 }
 
 export async function savePages(documentId: string, pages: { page: number; text: string }[]): Promise<void> {
-  await Promise.all(
-    pages.map((t) =>
-      query`INSERT INTO doc_pages (document_id, page, text, char_count)
-        VALUES (${documentId}, ${t.page}, ${t.text}, ${t.text.length})
-        ON CONFLICT (document_id, page) DO UPDATE SET text = EXCLUDED.text, char_count = EXCLUDED.char_count`
-    )
+  const qs: unknown[] = pages.map((p) =>
+    tag`INSERT INTO doc_pages (document_id, page, text, char_count)
+      VALUES (${documentId}, ${p.page}, ${p.text}, ${p.text.length})
+      ON CONFLICT (document_id, page) DO UPDATE SET text = EXCLUDED.text, char_count = EXCLUDED.char_count`
   );
+  if (qs.length) await tx(qs);
 }
 
-export type DocPage = { page: number; text: string; charCount: number };
-
-export async function getPages(documentId: string, startPage?: number, endPage?: number): Promise<DocPage[]> {
-  if (startPage === undefined || endPage === undefined) {
-    return query<DocPage>`SELECT page, text, char_count AS "charCount" FROM doc_pages WHERE document_id = ${documentId} ORDER BY page ASC`;
+export async function getPages(documentId: string, startPage?: number, endPage?: number): Promise<{ page: number; text: string; charCount: number }[]> {
+  let rows;
+  if (startPage !== undefined && endPage !== undefined) {
+    rows = await query<{ page: number; text: string; charCount: number }>`
+      SELECT page, text, char_count AS "charCount" FROM doc_pages
+      WHERE document_id = ${documentId} AND page >= ${startPage} AND page <= ${endPage} ORDER BY page ASC`;
+  } else {
+    rows = await query<{ page: number; text: string; charCount: number }>`
+      SELECT page, text, char_count AS "charCount" FROM doc_pages WHERE document_id = ${documentId} ORDER BY page ASC`;
   }
-  return query<DocPage>`SELECT page, text, char_count AS "charCount" FROM doc_pages
-    WHERE document_id = ${documentId} AND page >= ${startPage} AND page <= ${endPage} ORDER BY page ASC`;
+  return rows.map((r) => ({ page: Number(r.page), text: r.text, charCount: Number(r.charCount) }));
 }
 
 export type Batch = {
-  id: string; documentId: string; projectId: string; startPage: number; endPage: number;
-  status: string; attempts: number; error: string | null; updatedAt: string;
+  id: string; projectId: string; documentId: string;
+  startPage: number; endPage: number; status: string; attempts: number; error: string | null;
 };
 type BatchRow = {
-  id: string; document_id: string; project_id: string; start_page: number; end_page: number;
-  status: string; attempts: number; error: string | null; updated_at: string;
+  id: string; project_id: string; document_id: string;
+  start_page: number; end_page: number; status: string; attempts: number; error: string | null;
+  claimed_at: string | null;
 };
 function toBatch(r: BatchRow): Batch {
   return {
-    id: r.id, documentId: r.document_id, projectId: r.project_id, startPage: r.start_page,
-    endPage: r.end_page, status: r.status, attempts: r.attempts, error: r.error, updatedAt: r.updated_at,
+    id: r.id, projectId: r.project_id, documentId: r.document_id,
+    startPage: Number(r.start_page), endPage: Number(r.end_page),
+    status: r.status, attempts: Number(r.attempts), error: r.error,
   };
 }
-export const MAX_BATCH_ATTEMPTS = 3;
-
-export type BatchRange = { startPage: number; endPage: number } | [number, number];
 
 export async function createBatches(
   projectId: string,
   documentId: string,
-  ranges: BatchRange[]
-): Promise<Batch[]> {
-  const now = nowIso();
-  const norm = ranges.map((r) => (Array.isArray(r) ? { startPage: r[0], endPage: r[1] } : r));
-  const ids = norm.map(() => newId("bat"));
-  await Promise.all(
-    norm.map((r, i) =>
-      query`INSERT INTO batches (id, document_id, project_id, start_page, end_page, status, attempts, updated_at)
-        VALUES (${ids[i]}, ${documentId}, ${projectId}, ${r.startPage}, ${r.endPage}, 'pending', 0, ${now})`
-    )
-  );
-  const rows = await query<BatchRow>`SELECT * FROM batches WHERE document_id = ${documentId} ORDER BY start_page ASC`;
-  return rows.map(toBatch);
+  ranges: ({ startPage: number; endPage: number } | [number, number])[]
+): Promise<void> {
+  const qs: unknown[] = ranges.map((r) => {
+    const startPage = Array.isArray(r) ? r[0] : r.startPage;
+    const endPage = Array.isArray(r) ? r[1] : r.endPage;
+    return tag`INSERT INTO batches (id, project_id, document_id, start_page, end_page, status, attempts, error, claimed_at)
+      VALUES (${newId("bat")}, ${projectId}, ${documentId}, ${startPage}, ${endPage}, 'pending', 0, NULL, NULL)`;
+  });
+  if (qs.length) await tx(qs);
 }
 
-/** Atomically claims the next pending batch (single statement, SKIP LOCKED). */
+export const MAX_BATCH_ATTEMPTS = 3;
+
 export async function claimNextBatch(projectId: string, documentId: string, retryFailed = false): Promise<Batch | null> {
-  const now = nowIso();
   if (retryFailed) {
-    // User-initiated retry: reset failed batches so they are attempted again.
-    await query`UPDATE batches SET status = 'pending', attempts = 0, updated_at = ${now}
-      WHERE document_id = ${documentId} AND project_id = ${projectId} AND status = 'failed'`;
+    await query`UPDATE batches SET status = 'pending', attempts = 0, error = NULL, claimed_at = NULL
+      WHERE project_id = ${projectId} AND document_id = ${documentId} AND status = 'failed'`;
   }
-  // Release batches stuck in processing for > 10 minutes.
-  await query`UPDATE batches SET status = 'pending', updated_at = ${now}
-    WHERE document_id = ${documentId} AND project_id = ${projectId}
-      AND status = 'processing' AND updated_at < ${new Date(Date.now() - 10 * 60 * 1000).toISOString()}`;
-  // Retry failed batches below the attempt cap.
-  await query`UPDATE batches SET status = 'pending', updated_at = ${now}
-    WHERE document_id = ${documentId} AND project_id = ${projectId}
-      AND status = 'failed' AND attempts < ${MAX_BATCH_ATTEMPTS}`;
+  await query`UPDATE batches SET status = 'pending', claimed_at = NULL
+    WHERE project_id = ${projectId} AND document_id = ${documentId} AND status = 'processing'
+    AND claimed_at < NOW() - INTERVAL '10 minutes'`;
+  await query`UPDATE batches SET status = 'pending'
+    WHERE project_id = ${projectId} AND document_id = ${documentId} AND status = 'failed' AND attempts < ${MAX_BATCH_ATTEMPTS}`;
   const rows = await query<BatchRow>`
     WITH next AS (
       SELECT id FROM batches
-      WHERE document_id = ${documentId} AND project_id = ${projectId} AND status = 'pending'
-      ORDER BY start_page
-      LIMIT 1
-      FOR UPDATE SKIP LOCKED
+      WHERE project_id = ${projectId} AND document_id = ${documentId} AND status = 'pending'
+      ORDER BY start_page ASC LIMIT 1 FOR UPDATE SKIP LOCKED
     )
-    UPDATE batches b SET status = 'processing', attempts = b.attempts + 1, updated_at = ${now}
-    FROM next WHERE b.id = next.id
-    RETURNING b.*`;
+    UPDATE batches b SET status = 'processing', attempts = b.attempts + 1, claimed_at = NOW()
+    FROM next WHERE b.id = next.id RETURNING b.*`;
   if (!rows.length) return null;
   return toBatch(rows[0]);
 }
 
 export async function finishBatch(batchId: string, status: "done" | "failed", error?: string | null, attempts?: number): Promise<void> {
-  if (attempts === undefined) {
-    await query`UPDATE batches SET status = ${status}, error = ${error ?? null}, updated_at = ${nowIso()} WHERE id = ${batchId}`;
+  if (attempts !== undefined) {
+    await query`UPDATE batches SET status = ${status}, error = ${error ?? null}, attempts = ${attempts} WHERE id = ${batchId}`;
   } else {
-    await query`UPDATE batches SET status = ${status}, error = ${error ?? null}, attempts = ${attempts}, updated_at = ${nowIso()} WHERE id = ${batchId}`;
+    await query`UPDATE batches SET status = ${status}, error = ${error ?? null} WHERE id = ${batchId}`;
   }
 }
 
-export async function batchProgress(projectId: string, documentId: string): Promise<{ total: number; done: number; failed: number; processing: number }> {
-  const rows = await query<{ status: string; n: string }>`SELECT status, COUNT(*) AS n FROM batches WHERE document_id = ${documentId} AND project_id = ${projectId} GROUP BY status`;
-  const c: Record<string, number> = {};
-  for (const r of rows) c[r.status] = Number(r.n);
-  const done = c.done ?? 0;
-  const failed = c.failed ?? 0;
-  const processing = c.processing ?? 0;
-  return { total: done + failed + processing + (c.pending ?? 0), done, failed, processing };
+export async function batchProgress(projectId: string, documentId: string): Promise<{ total: number; done: number; failed: number; pending: number }> {
+  const rows = await query<{ status: string; n: string }>`
+    SELECT status, COUNT(*) AS n FROM batches WHERE project_id = ${projectId} AND document_id = ${documentId} GROUP BY status`;
+  const out = { total: 0, done: 0, failed: 0, pending: 0 };
+  for (const r of rows) {
+    const n = Number(r.n);
+    out.total += n;
+    if (r.status === "done") out.done += n;
+    else if (r.status === "failed") out.failed += n;
+    else out.pending += n;
+  }
+  return out;
 }
 
 // ---------------- evidence ----------------
 
 export type Evidence = {
-  id: string; projectId: string; documentId: string | null; batchId: string | null;
-  page: number; photoIndex: number; caption: string | null; captionSource: string | null;
-  locationId: string | null; locationText: string | null; locationConfidence: string | null;
-  locationBasis: string | null; materials: string[]; conditions: string[];
-  captionStatements: string[]; flags: string[]; readable: boolean; createdAt: string;
+  id: string; projectId: string; documentId: string; batchId: string | null;
+  page: number; kind: string; text: string;
+  locationId: string | null; locationText: string | null;
+  locationConfidence: string | null; locationBasis: string | null;
 };
 type EvidenceRow = {
-  id: string; project_id: string; document_id: string | null; batch_id: string | null;
-  page: number; photo_index: number; caption: string | null; caption_source: string | null;
-  location_id: string | null; location_text: string | null; location_confidence: string | null;
-  location_basis: string | null; materials: string; conditions: string;
-  caption_statements: string; flags: string; readable: number; created_at: string;
+  id: string; project_id: string; document_id: string; batch_id: string | null;
+  page: number; kind: string; text: string;
+  location_id: string | null; location_text: string | null;
+  location_confidence: string | null; location_basis: string | null;
 };
 function toEvidence(r: EvidenceRow): Evidence {
   return {
     id: r.id, projectId: r.project_id, documentId: r.document_id, batchId: r.batch_id,
-    page: r.page, photoIndex: r.photo_index, caption: r.caption, captionSource: r.caption_source,
-    locationId: r.location_id, locationText: r.location_text, locationConfidence: r.location_confidence,
-    locationBasis: r.location_basis, materials: j<string[]>(r.materials, []), conditions: j<string[]>(r.conditions, []),
-    captionStatements: j<string[]>(r.caption_statements, []), flags: j<string[]>(r.flags, []),
-    readable: r.readable === 1, createdAt: r.created_at,
+    page: Number(r.page), kind: r.kind, text: r.text,
+    locationId: r.location_id, locationText: r.location_text,
+    locationConfidence: r.location_confidence, locationBasis: r.location_basis,
   };
 }
 
 export async function listEvidence(projectId: string): Promise<Evidence[]> {
-  const rows = await query<EvidenceRow>`SELECT * FROM evidence WHERE project_id = ${projectId}
-    ORDER BY CASE WHEN document_id IS NULL THEN 1 ELSE 0 END, page ASC, photo_index ASC, created_at ASC`;
+  const rows = await query<EvidenceRow>`SELECT * FROM evidence WHERE project_id = ${projectId} ORDER BY page ASC`;
   return rows.map(toEvidence);
 }
 
@@ -345,15 +326,16 @@ export async function replaceBatchEvidence(
   projectId: string,
   documentId: string,
   batchId: string,
-  items: Omit<Evidence, "id" | "projectId" | "documentId" | "batchId" | "createdAt">[]
+  items: { page: number; kind: string; text: string; locationId?: string | null; locationText?: string | null }[]
 ): Promise<void> {
-  const now = nowIso();
-  const inserts = items.map((e) => {
-    const id = newId("evi");
-    return tag`INSERT INTO evidence (id, project_id, document_id, batch_id, page, photo_index, caption, caption_source, location_id, location_text, location_confidence, location_basis, materials, conditions, caption_statements, flags, readable, created_at)
-      VALUES (${id}, ${projectId}, ${documentId}, ${batchId}, ${e.page}, ${e.photoIndex}, ${e.caption ?? null}, ${e.captionSource ?? null}, ${e.locationId ?? null}, ${e.locationText ?? null}, ${e.locationConfidence ?? null}, ${e.locationBasis ?? null}, ${JSON.stringify(e.materials)}, ${JSON.stringify(e.conditions)}, ${JSON.stringify(e.captionStatements)}, ${JSON.stringify(e.flags)}, ${e.readable ? 1 : 0}, ${now})`;
-  });
-  await tx([tag`DELETE FROM evidence WHERE batch_id = ${batchId} AND project_id = ${projectId}`, ...inserts]);
+  const qs: unknown[] = [
+    tag`DELETE FROM evidence WHERE project_id = ${projectId} AND batch_id = ${batchId}`,
+    ...items.map((e) =>
+      tag`INSERT INTO evidence (id, project_id, document_id, batch_id, page, kind, text, location_id, location_text)
+        VALUES (${newId("ev")}, ${projectId}, ${documentId}, ${batchId}, ${e.page}, ${e.kind}, ${e.text}, ${e.locationId ?? null}, ${e.locationText ?? null})`
+    ),
+  ];
+  await tx(qs);
 }
 
 export async function setEvidenceLocation(
@@ -362,16 +344,16 @@ export async function setEvidenceLocation(
   patch: { locationId?: string | null; locationText?: string | null; locationConfidence?: string | null; locationBasis?: string | null }
 ): Promise<Evidence> {
   const cur = await queryOne<EvidenceRow>`SELECT * FROM evidence WHERE id = ${id} AND project_id = ${projectId}`;
-  if (!cur) throw new NotFound("Photo not found.");
-  const e = toEvidence(cur);
-  const locationId = patch.locationId !== undefined ? patch.locationId : e.locationId;
-  const locationText = patch.locationText !== undefined ? patch.locationText : e.locationText;
-  const locationConfidence = patch.locationConfidence !== undefined ? patch.locationConfidence : e.locationConfidence;
-  const locationBasis = patch.locationBasis !== undefined ? patch.locationBasis : e.locationBasis;
+  if (!cur) throw new NotFound("Evidence not found.");
+  const location_id = patch.locationId !== undefined ? patch.locationId : cur.location_id;
+  const location_text = patch.locationText !== undefined ? patch.locationText : cur.location_text;
+  const location_confidence = patch.locationConfidence !== undefined ? patch.locationConfidence : cur.location_confidence;
+  const location_basis = patch.locationBasis !== undefined ? patch.locationBasis : cur.location_basis;
   const rows = await query<EvidenceRow>`UPDATE evidence
-    SET location_id = ${locationId}, location_text = ${locationText}, location_confidence = ${locationConfidence}, location_basis = ${locationBasis}
+    SET location_id = ${location_id}, location_text = ${location_text},
+        location_confidence = ${location_confidence}, location_basis = ${location_basis}
     WHERE id = ${id} AND project_id = ${projectId} RETURNING *`;
-  if (!rows.length) throw new NotFound("Photo not found.");
+  if (!rows.length) throw new NotFound("Evidence not found.");
   return toEvidence(rows[0]);
 }
 
@@ -379,17 +361,21 @@ export async function setEvidenceLocation(
 
 type VisitRow = {
   id: string; project_id: string; type: string; visit_date: string;
-  appointment_time: string | null; arrival_time: string | null; departure_time: string | null;
-  access_outcome: string | null; field_notes: string; facts: string; doc: string | null;
-  manual_text: string | null; created_at: string; updated_at: string;
+  facts: string; doc: string | null; manual_text: string | null; text: string;
+  created_at: string; updated_at: string;
 };
 function toVisit(r: VisitRow): Visit {
   return {
-    id: r.id, projectId: r.project_id, type: r.type as VisitType, visitDate: r.visit_date,
-    appointmentTime: r.appointment_time, arrivalTime: r.arrival_time, departureTime: r.departure_time,
-    accessOutcome: r.access_outcome, fieldNotes: r.field_notes, facts: j<VisitFacts>(r.facts, emptyFacts()),
-    doc: r.doc ? (JSON.parse(r.doc) as ScopeDoc) : null, manualText: r.manual_text,
-    createdAt: r.created_at, updatedAt: r.updated_at,
+    id: r.id,
+    projectId: r.project_id,
+    type: r.type as VisitType,
+    visitDate: r.visit_date,
+    facts: j<VisitFacts>(r.facts, emptyFacts()),
+    doc: r.doc ? (JSON.parse(r.doc) as ScopeDoc) : null,
+    manualText: r.manual_text,
+    text: r.text,
+    createdAt: r.created_at,
+    updatedAt: r.updated_at,
   };
 }
 
@@ -404,77 +390,72 @@ export async function getVisit(projectId: string, id: string): Promise<Visit> {
   return toVisit(r);
 }
 
-export async function createVisit(projectId: string, input: { type: VisitType; visitDate: string; appointmentTime?: string | null }): Promise<Visit> {
-  await getProject(projectId);
+export async function createVisit(projectId: string, input: { type: VisitType; visitDate: string }): Promise<Visit> {
   const id = newId("vis");
   const now = nowIso();
-  const facts = emptyFacts();
-  await query`INSERT INTO visits (id, project_id, type, visit_date, appointment_time, facts, created_at, updated_at)
-    VALUES (${id}, ${projectId}, ${input.type}, ${input.visitDate}, ${input.appointmentTime ?? null}, ${JSON.stringify(facts)}, ${now}, ${now})`;
+  const facts = JSON.stringify(emptyFacts());
+  await query`INSERT INTO visits (id, project_id, type, visit_date, facts, doc, manual_text, text, created_at, updated_at)
+    VALUES (${id}, ${projectId}, ${input.type}, ${input.visitDate}, ${facts}, NULL, NULL, '', ${now}, ${now})`;
   await touchProject(projectId);
   return getVisit(projectId, id);
 }
 
-export const VISIT_EDITABLE: (keyof Pick<Visit, "appointmentTime" | "arrivalTime" | "departureTime" | "accessOutcome" | "fieldNotes">)[] =
-  ["appointmentTime", "arrivalTime", "departureTime", "accessOutcome", "fieldNotes"];
+export const VISIT_EDITABLE = ["type", "visitDate", "facts", "doc", "manualText", "text"] as const;
 
 export async function updateVisitFields(
   projectId: string,
   id: string,
-  patch: Partial<Pick<Visit, "appointmentTime" | "arrivalTime" | "departureTime" | "accessOutcome" | "fieldNotes">>
+  patch: Partial<Pick<Visit, "type" | "visitDate" | "facts" | "doc" | "manualText" | "text">>
 ): Promise<Visit> {
   await getVisit(projectId, id);
   const updates: unknown[] = [];
-  if (patch.appointmentTime !== undefined)
-    updates.push(tag`UPDATE visits SET appointment_time = ${patch.appointmentTime ?? null} WHERE id = ${id} AND project_id = ${projectId}`);
-  if (patch.arrivalTime !== undefined)
-    updates.push(tag`UPDATE visits SET arrival_time = ${patch.arrivalTime ?? null} WHERE id = ${id} AND project_id = ${projectId}`);
-  if (patch.departureTime !== undefined)
-    updates.push(tag`UPDATE visits SET departure_time = ${patch.departureTime ?? null} WHERE id = ${id} AND project_id = ${projectId}`);
-  if (patch.accessOutcome !== undefined)
-    updates.push(tag`UPDATE visits SET access_outcome = ${patch.accessOutcome ?? null} WHERE id = ${id} AND project_id = ${projectId}`);
-  if (patch.fieldNotes !== undefined)
-    updates.push(tag`UPDATE visits SET field_notes = ${patch.fieldNotes ?? null} WHERE id = ${id} AND project_id = ${projectId}`);
-  updates.push(tag`UPDATE visits SET updated_at = ${nowIso()} WHERE id = ${id} AND project_id = ${projectId}`);
-  await tx(updates);
+  if (patch.type !== undefined) updates.push(tag`UPDATE visits SET type = ${patch.type} WHERE id = ${id}`);
+  if (patch.visitDate !== undefined) updates.push(tag`UPDATE visits SET visit_date = ${patch.visitDate} WHERE id = ${id}`);
+  if (patch.facts !== undefined) updates.push(tag`UPDATE visits SET facts = ${JSON.stringify(patch.facts)} WHERE id = ${id}`);
+  if (patch.doc !== undefined) updates.push(tag`UPDATE visits SET doc = ${patch.doc ? JSON.stringify(patch.doc) : null} WHERE id = ${id}`);
+  if (patch.manualText !== undefined) updates.push(tag`UPDATE visits SET manual_text = ${patch.manualText} WHERE id = ${id}`);
+  if (patch.text !== undefined) updates.push(tag`UPDATE visits SET text = ${patch.text} WHERE id = ${id}`);
+  updates.push(tag`UPDATE visits SET updated_at = ${nowIso()} WHERE id = ${id}`);
+  if (updates.length) await tx(updates);
   await touchProject(projectId);
   return getVisit(projectId, id);
 }
 
 export async function saveVisitState(input: {
-  projectId: string; visitId: string; trigger: string; facts?: VisitFacts;
-  doc?: ScopeDoc | null; manualText?: string | null; text: string;
-  changes: unknown[]; input?: unknown;
-}): Promise<Visit> {
-  const visit = await getVisit(input.projectId, input.visitId);
-  const n = await queryOne<{ n: string }>`SELECT COALESCE(MAX(version), 0) AS n FROM drafts WHERE visit_id = ${input.visitId}`;
-  const version = Number(n?.n ?? 0) + 1;
-  const facts = input.facts ?? visit.facts;
-  const doc = input.doc === undefined ? visit.doc : input.doc;
-  const manualText = input.manualText === undefined ? visit.manualText : input.manualText;
+  projectId: string; visitId: string; trigger: string;
+  facts?: VisitFacts; doc?: ScopeDoc | null; manualText?: string | null;
+  text: string; changes: string[]; input?: unknown;
+}): Promise<void> {
+  const vrow = await queryOne<{ version: string }>`SELECT MAX(version) AS version FROM drafts WHERE visit_id = ${input.visitId}`;
+  const version = Number(vrow?.version ?? 0) + 1;
   const now = nowIso();
-  const id = newId("drf");
   await tx([
-    tag`UPDATE visits SET facts = ${JSON.stringify(facts)}, doc = ${doc ? JSON.stringify(doc) : null}, manual_text = ${manualText ?? null}, updated_at = ${now} WHERE id = ${input.visitId} AND project_id = ${input.projectId}`,
-    tag`INSERT INTO drafts (id, visit_id, project_id, version, trigger, input, changes, facts, doc, manual_text, text, created_at)
-      VALUES (${id}, ${input.visitId}, ${input.projectId}, ${version}, ${input.trigger}, ${input.input ? JSON.stringify(input.input) : null}, ${JSON.stringify(input.changes)}, ${JSON.stringify(facts)}, ${doc ? JSON.stringify(doc) : null}, ${manualText ?? null}, ${input.text}, ${now})`,
+    tag`UPDATE visits SET facts = ${input.facts ? JSON.stringify(input.facts) : (await getVisit(input.projectId, input.visitId)).facts ? JSON.stringify((await getVisit(input.projectId, input.visitId)).facts) : JSON.stringify(emptyFacts())}, doc = ${input.doc !== undefined ? (input.doc ? JSON.stringify(input.doc) : null) : undefined}, manual_text = ${input.manualText !== undefined ? input.manualText : undefined}, text = ${input.text}, updated_at = ${now} WHERE id = ${input.visitId}`,
+    tag`INSERT INTO drafts (id, project_id, visit_id, version, trigger, facts, doc, manual_text, text, changes, input, created_at)
+      VALUES (${newId("drf")}, ${input.projectId}, ${input.visitId}, ${version}, ${input.trigger},
+        ${input.facts ? JSON.stringify(input.facts) : null}, ${input.doc !== undefined ? (input.doc ? JSON.stringify(input.doc) : null) : null},
+        ${input.manualText !== undefined ? input.manualText : null}, ${input.text}, ${JSON.stringify(input.changes)},
+        ${input.input !== undefined ? JSON.stringify(input.input) : null}, ${now})`,
     tag`UPDATE projects SET updated_at = ${now} WHERE id = ${input.projectId}`,
   ]);
-  return getVisit(input.projectId, input.visitId);
 }
 
-type DraftRow = {
-  id: string; visit_id: string; project_id: string; version: number; trigger: string;
-  input: string | null; changes: string; facts: string; doc: string | null;
-  manual_text: string | null; text: string; created_at: string;
-};
 export async function listDrafts(projectId: string, visitId: string): Promise<DraftVersion[]> {
-  await getVisit(projectId, visitId);
-  const rows = await query<DraftRow>`SELECT * FROM drafts WHERE visit_id = ${visitId} AND project_id = ${projectId} ORDER BY version DESC`;
+  const rows = await query<{
+    id: string; version: number; trigger: string; facts: string | null; doc: string | null;
+    manual_text: string | null; text: string; changes: string; input: string | null; created_at: string;
+  }>`SELECT * FROM drafts WHERE project_id = ${projectId} AND visit_id = ${visitId} ORDER BY version DESC`;
   return rows.map((r) => ({
-    id: r.id, visitId: r.visit_id, projectId: r.project_id, version: r.version, trigger: r.trigger,
-    input: j(r.input, null), changes: j(r.changes, []), facts: j<VisitFacts>(r.facts, emptyFacts()),
-    doc: r.doc ? (JSON.parse(r.doc) as ScopeDoc) : null, manualText: r.manual_text, text: r.text, createdAt: r.created_at,
+    id: r.id,
+    version: Number(r.version),
+    trigger: r.trigger,
+    facts: r.facts ? (JSON.parse(r.facts) as VisitFacts) : undefined,
+    doc: r.doc ? (JSON.parse(r.doc) as ScopeDoc) : undefined,
+    manualText: r.manual_text ?? undefined,
+    text: r.text,
+    changes: JSON.parse(r.changes) as string[],
+    input: r.input ? JSON.parse(r.input) : undefined,
+    createdAt: r.created_at,
   }));
 }
 
@@ -486,26 +467,28 @@ export async function getDraftState(projectId: string, visitId: string, draftId:
 }
 
 export async function deleteVisit(projectId: string, id: string): Promise<void> {
-  const rows = await query<{ id: string }>`DELETE FROM visits WHERE id = ${id} AND project_id = ${projectId} RETURNING id`;
-  if (!rows.length) throw new NotFound("Visit not found.");
-  await touchProject(projectId);
+  const deleted = await query<{ id: string }>`DELETE FROM visits WHERE id = ${id} AND project_id = ${projectId} RETURNING id`;
+  if (!deleted.length) throw new NotFound("Visit not found.");
 }
 
 // ---------------- templates ----------------
 
 export type ChecklistItem = { id: string; label: string };
-export type ChecklistTemplate = { id: string; name: string; visitTypes: VisitType[]; items: ChecklistItem[]; isStarter: boolean; createdAt: string };
-type TemplateRow = { id: string; name: string; visit_types: string; items: string; is_starter: number; created_at: string };
+export type ChecklistTemplate = { id: string; name: string; visitTypes: VisitType[]; items: ChecklistItem[]; isStarter: boolean };
+type TemplateRow = { id: string; name: string; visit_types: string; items: string; is_starter: number };
 function toTemplate(r: TemplateRow): ChecklistTemplate {
   return {
-    id: r.id, name: r.name, visitTypes: j<VisitType[]>(r.visit_types, []),
-    items: j<ChecklistItem[]>(r.items, []), isStarter: !!r.is_starter, createdAt: r.created_at,
+    id: r.id,
+    name: r.name,
+    visitTypes: JSON.parse(r.visit_types) as VisitType[],
+    items: JSON.parse(r.items) as ChecklistItem[],
+    isStarter: !!r.is_starter,
   };
 }
 
 export async function listTemplates(): Promise<ChecklistTemplate[]> {
   await ensureStarterTemplates();
-  const rows = await query<TemplateRow>`SELECT * FROM checklist_templates ORDER BY is_starter DESC, name ASC`;
+  const rows = await query<TemplateRow>`SELECT * FROM checklist_templates ORDER BY name ASC`;
   return rows.map(toTemplate);
 }
 
@@ -516,120 +499,78 @@ export async function getTemplate(id: string): Promise<ChecklistTemplate> {
 }
 
 export async function saveTemplate(t: { id?: string; name: string; visitTypes: VisitType[]; items: string[] }): Promise<ChecklistTemplate> {
-  if (!t.name.trim()) throw new Error("Template name is required.");
-  const id = t.id ?? newId("tpl");
-  const now = nowIso();
-  // Preserve item ids for labels that already existed, so saved checklist
-  // entries keep pointing at the right items when a template is edited.
-  let existing: ChecklistTemplate | null = null;
-  if (t.id) {
-    try { existing = await getTemplate(id); } catch { existing = null; }
-  }
+  const existing = t.id ? await queryOne<TemplateRow>`SELECT * FROM checklist_templates WHERE id = ${t.id}` : null;
+  const oldItems: ChecklistItem[] = existing ? (JSON.parse(existing.items) as ChecklistItem[]) : [];
   const items: ChecklistItem[] = t.items.map((label) => {
-    const keep = existing?.items.find((x) => x.label === label);
-    return { id: keep?.id ?? newId("sti"), label };
+    const found = oldItems.find((o) => o.label === label);
+    return found ?? { id: newId("sti"), label };
   });
-  await query`INSERT INTO checklist_templates (id, name, visit_types, items, is_starter, created_at)
-    VALUES (${id}, ${t.name.trim()}, ${JSON.stringify(t.visitTypes)}, ${JSON.stringify(items)}, 0, ${now})
-    ON CONFLICT(id) DO UPDATE SET name = EXCLUDED.name, visit_types = EXCLUDED.visit_types,
-      items = EXCLUDED.items, is_starter = checklist_templates.is_starter`;
-  return getTemplate(id);
+  const id = t.id ?? newId("tpl");
+  const isStarter = existing ? !!existing.is_starter : false;
+  await query`INSERT INTO checklist_templates (id, name, visit_types, items, is_starter)
+    VALUES (${id}, ${t.name}, ${JSON.stringify(t.visitTypes)}, ${JSON.stringify(items)}, ${isStarter ? 1 : 0})
+    ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, visit_types = EXCLUDED.visit_types, items = EXCLUDED.items,
+      is_starter = checklist_templates.is_starter`;
+  const row = await queryOne<TemplateRow>`SELECT * FROM checklist_templates WHERE id = ${id}`;
+  if (!row) throw new Error("Failed to save template.");
+  return toTemplate(row);
 }
 
 export async function deleteTemplate(id: string): Promise<void> {
-  const rows = await query<{ id: string }>`DELETE FROM checklist_templates WHERE id = ${id} RETURNING id`;
-  if (!rows.length) throw new NotFound("Template not found.");
+  const deleted = await query<{ id: string }>`DELETE FROM checklist_templates WHERE id = ${id} RETURNING id`;
+  if (!deleted.length) throw new NotFound("Template not found.");
 }
 
 const STARTER_TEMPLATES: { name: string; visitTypes: VisitType[]; items: string[] }[] = [
-  {
-    name: "Final walk-through / completed mitigation",
-    visitTypes: ["final"],
-    items: [
-      "Verify all mitigation equipment removed and work areas clean.",
-      "Confirm drying goals met in every affected room (meter readings logged).",
-      "Photo-document finished conditions for each room in scope.",
-      "Collect customer sign-off and note any remaining concerns.",
-    ],
-  },
-  {
-    name: "Reconstruction scope",
-    visitTypes: ["reconstruction"],
-    items: [
-      "Measure each affected room (L \u00d7 W \u00d7 H) and note ceiling type.",
-      "List materials to replace vs. restore per room.",
-      "Note electrical / plumbing / HVAC impacts.",
-      "Photo-document pre-reconstruction conditions.",
-    ],
-  },
-  {
-    name: "Contents cleaning scope",
-    visitTypes: ["contents"],
-    items: [
-      "Inventory affected contents by room with condition notes.",
-      "Separate cleanable, questionable, and non-restorable items.",
-      "Photo-document high-value items before handling.",
-      "Record chain of custody for pack-out / storage.",
-    ],
-  },
-  {
-    name: "Checklist information",
-    visitTypes: ["checklist"],
-    items: [
-      "Confirm appointment details and site access.",
-      "Walk the loss with the customer and note concerns.",
-      "Capture overview photos of every affected area.",
-      "Summarize next steps before leaving the site.",
-    ],
-  },
+  { name: "Initial assessment", visitTypes: ["initial"], items: ["Exterior walk-around", "Interior walk-through", "Moisture mapping", "Photo documentation", "Source identification"] },
+  { name: "Mitigation monitoring", visitTypes: ["monitoring"], items: ["Equipment check", "Moisture readings", "Progress photos", "Customer update"] },
+  { name: "Final walk-through", visitTypes: ["final"], items: ["Dry standard verification", "Final photos", "Customer sign-off", "Documentation complete"] },
+  { name: "General checklist", visitTypes: ["initial", "monitoring", "final"], items: ["Safety check", "Documentation", "Customer communication"] },
 ];
 
-export async function ensureStarterTemplates(): Promise<void> {
-  const r = await queryOne<{ n: string }>`SELECT COUNT(*) AS n FROM checklist_templates`;
-  if (Number(r?.n ?? 0)) return;
-  const now = nowIso();
-  await Promise.all(
-    STARTER_TEMPLATES.map((t) =>
-      query`INSERT INTO checklist_templates (id, name, visit_types, items, is_starter, created_at)
-        VALUES (${newId("tpl")}, ${t.name}, ${JSON.stringify(t.visitTypes)}, ${JSON.stringify(t.items.map((label) => ({ id: newId("sti"), label })))}, 1, ${now})`
-    )
+async function ensureStarterTemplates(): Promise<void> {
+  const n = await queryOne<{ n: string }>`SELECT COUNT(*) AS n FROM checklist_templates WHERE is_starter = 1`;
+  if (Number(n?.n ?? 0) > 0) return;
+  const qs: unknown[] = STARTER_TEMPLATES.map((t) =>
+    tag`INSERT INTO checklist_templates (id, name, visit_types, items, is_starter)
+      VALUES (${newId("tpl")}, ${t.name}, ${JSON.stringify(t.visitTypes)},
+        ${JSON.stringify(t.items.map((label) => ({ id: newId("sti"), label })))}, 1)
+      ON CONFLICT DO NOTHING`
   );
+  if (qs.length) await tx(qs);
 }
 
 // ---------------- manuals ----------------
 
 export type ManualRule = { id: string; topic: string; rule: string };
-export type Manual = {
-  id: string; name: string; filename: string; storedPath: string;
-  rules: ManualRule[]; status: string; error: string | null; createdAt: string;
-};
+export type Manual = { id: string; name: string; filename: string; storedPath: string; text: string; rules: ManualRule[]; status: string; error: string | null; createdAt: string };
 type ManualRow = {
-  id: string; name: string; filename: string; stored_path: string;
-  text: string; rules: string; status: string; error: string | null; created_at: string;
+  id: string; name: string; filename: string; stored_path: string; text: string;
+  rules: string; status: string; error: string | null; created_at: string;
 };
 function toManual(r: ManualRow): Manual {
   return {
-    id: r.id, name: r.name, filename: r.filename, storedPath: r.stored_path,
-    rules: j<ManualRule[]>(r.rules, []),
-    status: r.status, error: r.error, createdAt: r.created_at,
+    id: r.id, name: r.name, filename: r.filename, storedPath: r.stored_path, text: r.text,
+    rules: JSON.parse(r.rules) as ManualRule[], status: r.status, error: r.error, createdAt: r.created_at,
   };
 }
 
 export async function listManuals(): Promise<Manual[]> {
-  const rows = await query<ManualRow>`SELECT id, name, filename, stored_path, rules, status, error, created_at FROM manuals ORDER BY created_at DESC`;
+  const rows = await query<ManualRow>`SELECT id, name, filename, stored_path, text, rules, status, error, created_at FROM manuals ORDER BY created_at DESC`;
   return rows.map(toManual);
 }
 
 export async function getManualText(id: string): Promise<{ manual: Manual; text: string }> {
   const r = await queryOne<ManualRow>`SELECT * FROM manuals WHERE id = ${id}`;
   if (!r) throw new NotFound("Manual not found.");
-  return { manual: toManual(r), text: r.text };
+  const manual = toManual(r);
+  return { manual, text: manual.text };
 }
 
 export async function createManual(input: { id: string; name: string; filename: string; storedPath: string; text: string }): Promise<Manual> {
   const now = nowIso();
-  await query`INSERT INTO manuals (id, name, filename, stored_path, text, rules, status, created_at)
-    VALUES (${input.id}, ${input.name}, ${input.filename}, ${input.storedPath}, ${input.text}, '[]', 'uploaded', ${now})`;
+  await query`INSERT INTO manuals (id, name, filename, stored_path, text, rules, status, error, created_at)
+    VALUES (${input.id}, ${input.name}, ${input.filename}, ${input.storedPath}, ${input.text}, '[]', 'pending', NULL, ${now})`;
   const row = await queryOne<ManualRow>`SELECT * FROM manuals WHERE id = ${input.id}`;
   if (!row) throw new Error("Failed to create manual.");
   return toManual(row);
@@ -640,17 +581,23 @@ export async function setManualRules(id: string, rules: ManualRule[], status: st
 }
 
 export async function deleteManual(id: string): Promise<void> {
-  const r = await queryOne<{ stored_path: string }>`SELECT stored_path FROM manuals WHERE id = ${id}`;
-  if (!r) throw new NotFound("Manual not found.");
+  const m = await queryOne<ManualRow>`SELECT * FROM manuals WHERE id = ${id}`;
+  if (!m) throw new NotFound("Manual not found.");
   await query`DELETE FROM manuals WHERE id = ${id}`;
   await query`DELETE FROM manual_conflicts WHERE manual_ids LIKE ${`%${id}%`}`;
-  rmSync(r.stored_path, { force: true });
+  if (m.stored_path) rmSync(m.stored_path, { force: true });
 }
 
-export type ManualConflict = { id: string; description: string; manualIds: string[]; status: string; createdAt: string };
-type ConflictRow = { id: string; description: string; manual_ids: string; status: string; created_at: string };
+export type ManualConflict = { id: string; manualIds: string[]; description: string; resolved: boolean; createdAt: string };
+type ConflictRow = { id: string; manual_ids: string; description: string; resolved: number; created_at: string };
 function toConflict(r: ConflictRow): ManualConflict {
-  return { id: r.id, description: r.description, manualIds: j<string[]>(r.manual_ids, []), status: r.status, createdAt: r.created_at };
+  return {
+    id: r.id,
+    manualIds: JSON.parse(r.manual_ids) as string[],
+    description: r.description,
+    resolved: !!r.resolved,
+    createdAt: r.created_at,
+  };
 }
 
 export async function listConflicts(): Promise<ManualConflict[]> {
@@ -658,17 +605,16 @@ export async function listConflicts(): Promise<ManualConflict[]> {
   return rows.map(toConflict);
 }
 
-export async function addConflicts(items: { description: string; manualIds: string[] }[]): Promise<void> {
+export async function addConflicts(items: { manualIds: string[]; description: string }[]): Promise<void> {
   const now = nowIso();
-  await Promise.all(
-    items.map((c) =>
-      query`INSERT INTO manual_conflicts (id, description, manual_ids, status, created_at)
-        VALUES (${newId("mcf")}, ${c.description}, ${JSON.stringify(c.manualIds)}, 'open', ${now})`
-    )
+  const qs: unknown[] = items.map((c) =>
+    tag`INSERT INTO manual_conflicts (id, manual_ids, description, resolved, created_at)
+      VALUES (${newId("mcf")}, ${JSON.stringify(c.manualIds)}, ${c.description}, 0, ${now})`
   );
+  if (qs.length) await tx(qs);
 }
 
 export async function resolveConflict(id: string): Promise<void> {
-  const rows = await query<{ id: string }>`UPDATE manual_conflicts SET status = 'resolved' WHERE id = ${id} RETURNING id`;
-  if (!rows.length) throw new NotFound("Conflict not found.");
+  const updated = await query<{ id: string }>`UPDATE manual_conflicts SET resolved = 1 WHERE id = ${id} RETURNING id`;
+  if (!updated.length) throw new NotFound("Conflict not found.");
 }
