@@ -238,6 +238,70 @@ const SCHEMA: string[] = [
   `ALTER TABLE evidence ADD COLUMN IF NOT EXISTS readable INTEGER NOT NULL DEFAULT 1`,
   // repo writes manual_conflicts.resolved, which the original CREATE TABLE lacked
   `ALTER TABLE manual_conflicts ADD COLUMN IF NOT EXISTS resolved INTEGER NOT NULL DEFAULT 0`,
+  // --- FNOL intake: properties with many assignments (kind of work) over time ---
+  `CREATE TABLE IF NOT EXISTS properties (
+    id TEXT PRIMARY KEY,
+    address_key TEXT NOT NULL UNIQUE,
+    address TEXT NOT NULL,
+    unit TEXT,
+    year_built INTEGER,
+    multi_unit INTEGER NOT NULL DEFAULT 0,
+    adjacent_checks TEXT NOT NULL DEFAULT '{}',
+    notes TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS assignments (
+    id TEXT PRIMARY KEY,
+    property_id TEXT NOT NULL REFERENCES properties(id) ON DELETE CASCADE,
+    project_id TEXT REFERENCES projects(id) ON DELETE SET NULL,
+    service_lines TEXT NOT NULL DEFAULT '[]',
+    contents_only INTEGER NOT NULL DEFAULT 0,
+    stage TEXT NOT NULL DEFAULT 'initial_walkthrough',
+    special INTEGER NOT NULL DEFAULT 0,
+    special_reason TEXT,
+    program TEXT,
+    claim_number TEXT,
+    assignment_number TEXT,
+    policy_number TEXT,
+    carrier TEXT,
+    insured TEXT,
+    contact_phone TEXT,
+    email TEXT,
+    loss_date TEXT,
+    loss_type TEXT,
+    cause_of_loss TEXT,
+    received_at TEXT NOT NULL,
+    raw_text TEXT NOT NULL DEFAULT '',
+    parsed TEXT NOT NULL DEFAULT '{}',
+    status TEXT NOT NULL DEFAULT 'new',
+    history TEXT NOT NULL DEFAULT '[]',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_assignments_property ON assignments(property_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_assignments_project ON assignments(project_id)`,
+  // --- editable rules (overrides of src/lib/defaults.ts, one row per section) ---
+  `CREATE TABLE IF NOT EXISTS app_settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  )`,
+  // --- room-by-room scans (one per visit + room) ---
+  `CREATE TABLE IF NOT EXISTS room_scans (
+    id TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    visit_id TEXT NOT NULL REFERENCES visits(id) ON DELETE CASCADE,
+    location_id TEXT NOT NULL REFERENCES locations(id) ON DELETE CASCADE,
+    data TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    UNIQUE (visit_id, location_id)
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_room_scans_visit ON room_scans(visit_id)`,
+  // --- kind of visit (stage) separate from kind of work (service line) ---
+  `ALTER TABLE visits ADD COLUMN IF NOT EXISTS stage TEXT`,
+  `ALTER TABLE visits ADD COLUMN IF NOT EXISTS service_line TEXT`,
 ];
 
 let schemaPromise: Promise<void> | null = null;

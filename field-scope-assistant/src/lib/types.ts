@@ -57,6 +57,10 @@ export interface Visit {
   arrivalTime: string | null;
   departureTime: string | null;
   accessOutcome: string | null;
+  /** Kind of visit (initial walk-through, monitoring, final…) — separate from the kind of work. */
+  stage: import("./fnol").VisitStage | null;
+  /** Kind of work this visit is for (EMS, mitigation, reconstruction, contents). */
+  serviceLine: import("./fnol").ServiceLine | null;
   fieldNotes: string;
   facts: VisitFacts;
   doc: import("./schemas").ScopeDoc | null;

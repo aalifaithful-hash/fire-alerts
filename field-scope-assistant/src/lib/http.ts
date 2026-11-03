@@ -6,6 +6,7 @@ import { UserError } from "./service";
 import { AiError, AiNotConfiguredError } from "./ai/client";
 import { DatabaseNotConfiguredError } from "./db";
 import { BlobError } from "@vercel/blob";
+import { IntakeError } from "./intake";
 
 type Ctx<P> = { params: Promise<P> };
 
@@ -33,7 +34,7 @@ export function json(body: unknown, status = 200) {
 
 export function errorResponse(e: unknown) {
   if (e instanceof NotFound) return json({ error: e.message }, 404);
-  if (e instanceof UserError) return json({ error: e.message }, 400);
+  if (e instanceof UserError || e instanceof IntakeError) return json({ error: e.message }, 400);
   if (e instanceof ZodError) return json({ error: "Invalid input" }, 400);
   if (e instanceof AiNotConfiguredError) return json({ error: e.message, code: "NO_API_KEY" }, 503);
   if (e instanceof AiError) return json({ error: e.message, retryable: e.retryable }, 502);

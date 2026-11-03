@@ -405,6 +405,7 @@ export async function setEvidenceLocation(projectId: string, id: string, patch: 
 type VisitRow = {
   id: string; project_id: string; type: string; visit_date: string;
   appointment_time: string | null; arrival_time: string | null; departure_time: string | null; access_outcome: string | null;
+  stage: string | null; service_line: string | null;
   facts: string; doc: string | null; manual_text: string | null; text: string;
   field_notes: string; created_at: string; updated_at: string;
 };
@@ -420,6 +421,8 @@ function toVisit(r: VisitRow): Visit {
     arrivalTime: r.arrival_time ?? null,
     departureTime: r.departure_time ?? null,
     accessOutcome: r.access_outcome ?? null,
+    stage: (r.stage as Visit["stage"]) ?? null,
+    serviceLine: (r.service_line as Visit["serviceLine"]) ?? null,
     facts: parsed.success ? parsed.data : emptyFacts(),
     doc: j<ScopeDoc | null>(r.doc, null),
     manualText: r.manual_text,
@@ -448,16 +451,22 @@ export async function getVisit(projectId: string, id: string): Promise<Visit> {
  */
 export async function createVisit(
   projectId: string,
-  input: { type: VisitType; visitDate: string; appointmentTime?: string | null },
+  input: {
+    type: VisitType;
+    visitDate: string;
+    appointmentTime?: string | null;
+    stage?: Visit["stage"];
+    serviceLine?: Visit["serviceLine"];
+  },
 ): Promise<Visit> {
   await getProject(projectId);
   const id = newId("vis");
   const now = nowIso();
   const facts = JSON.stringify(emptyFacts());
   await query`INSERT INTO visits (id, project_id, type, visit_date, appointment_time, arrival_time, departure_time, access_outcome,
-      facts, doc, manual_text, text, field_notes, created_at, updated_at)
+      stage, service_line, facts, doc, manual_text, text, field_notes, created_at, updated_at)
     VALUES (${id}, ${projectId}, ${input.type}, ${input.visitDate}, ${input.appointmentTime ?? null}, NULL, NULL, NULL,
-      ${facts}, NULL, NULL, '', '', ${now}, ${now})`;
+      ${input.stage ?? null}, ${input.serviceLine ?? null}, ${facts}, NULL, NULL, '', '', ${now}, ${now})`;
   await touchProject(projectId);
   return getVisit(projectId, id);
 }
@@ -476,6 +485,8 @@ export const VISIT_EDITABLE = {
   departureTime: "departure_time",
   accessOutcome: "access_outcome",
   fieldNotes: "field_notes",
+  stage: "stage",
+  serviceLine: "service_line",
 } as const;
 export type VisitEditableField = keyof typeof VISIT_EDITABLE;
 
@@ -504,6 +515,9 @@ export async function updateVisitFields(
     updates.push(tag`UPDATE visits SET access_outcome = ${v("accessOutcome")} WHERE id = ${id} AND project_id = ${projectId}`);
   if (patch.fieldNotes !== undefined)
     updates.push(tag`UPDATE visits SET field_notes = ${v("fieldNotes")} WHERE id = ${id} AND project_id = ${projectId}`);
+  if (patch.stage !== undefined) updates.push(tag`UPDATE visits SET stage = ${v("stage")} WHERE id = ${id} AND project_id = ${projectId}`);
+  if (patch.serviceLine !== undefined)
+    updates.push(tag`UPDATE visits SET service_line = ${v("serviceLine")} WHERE id = ${id} AND project_id = ${projectId}`);
   if (updates.length) {
     updates.push(tag`UPDATE visits SET updated_at = ${nowIso()} WHERE id = ${id} AND project_id = ${projectId}`);
     await tx(updates);
