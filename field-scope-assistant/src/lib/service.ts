@@ -1,6 +1,4 @@
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import path from "node:path";
-import { UPLOAD_DIR } from "./db";
+import { blobStoredPath, projectKey, putFile, readStoredFile } from "./storage";
 import { newId } from "./ids";
 import { fullLabel, norm, resolveLocation } from "./locations";
 import { applyGuards } from "./guards";
@@ -22,7 +20,7 @@ import {
 } from "./schemas";
 import { todayNY, weekdayNY } from "./time";
 import type { DraftVersion, Project, Visit } from "./types";
-import { structured, type ContentBlock } from "./ai/client";
+import { aiAvailable, AiNotConfiguredError, structured, type ContentBlock } from "./ai/client";
 import { AnalysisOutput, ChecklistOutput, CorrectionOutput, ManualRulesOutput, PdfBatchOutput } from "./ai/schemas";
 import { CHECKLIST_SYSTEM, CORRECTION_SYSTEM, MANUAL_SYSTEM, PDF_SYSTEM, visitSystem } from "./ai/prompts";
 
@@ -34,15 +32,19 @@ export class UserError extends Error {}
 
 export const MAX_UPLOAD_BYTES = 200 * 1024 * 1024;
 
-export async function ingestPdf(projectId: string, file: { name: string; bytes: Uint8Array }) {
+/**
+ * Registers a CompanyCam PDF: stores it (unless the browser already uploaded it
+ * to Blob — pass `blobUrl`), extracts selectable text per page, and plans
+ * page batches for AI analysis.
+ */
+export async function ingestPdf(projectId: string, file: { name: string; bytes: Uint8Array; blobUrl?: string }) {
   await repo.getProject(projectId);
   if (!isPdf(file.bytes)) throw new UserError("That file is not a PDF.");
   if (file.bytes.length > MAX_UPLOAD_BYTES) throw new UserError("PDF is larger than 200 MB.");
   const id = newId("doc");
-  const dir = path.join(UPLOAD_DIR, projectId);
-  mkdirSync(dir, { recursive: true, mode: 0o700 });
-  const storedPath = path.join(dir, `${id}.pdf`);
-  writeFileSync(storedPath, file.bytes, { mode: 0o600 });
+  const storedPath = file.blobUrl
+    ? blobStoredPath(file.blobUrl)
+    : await putFile(projectKey(projectId, `${id}.pdf`), file.bytes, "application/pdf");
 
   let pages: string[] = [];
   let extractError: string | null = null;
@@ -72,6 +74,8 @@ export async function ingestPdf(projectId: string, file: { name: string; bytes: 
  */
 export async function processNextBatch(projectId: string, documentId: string, retryFailed = false) {
   const doc = await repo.getDocument(projectId, documentId);
+  // Don't claim (and burn retry attempts on) a batch that cannot be analyzed.
+  if (!aiAvailable()) throw new AiNotConfiguredError();
   const batch = await repo.claimNextBatch(projectId, documentId, retryFailed);
   if (!batch) {
     const p = await repo.batchProgress(projectId, documentId);
@@ -79,7 +83,7 @@ export async function processNextBatch(projectId: string, documentId: string, re
     return { done: true, progress: p };
   }
   try {
-    const source = new Uint8Array(readFileSync(doc.storedPath));
+    const source = await readStoredFile(doc.storedPath);
     const chunk = await buildChunk(source, batch.startPage, batch.endPage);
     if (chunk.length > MAX_CHUNK_BYTES) {
       if (batch.endPage > batch.startPage) {
@@ -650,7 +654,8 @@ export async function setManualText(projectId: string, visitId: string, text: st
 
 export async function restoreDraft(projectId: string, visitId: string, draftId: string) {
   const s = await repo.getDraftState(projectId, visitId, draftId);
-  return commit(projectId, visitId, s.facts, { trigger: "restore", input: `Restored version ${s.version}`, changes: [`Restored version ${s.version}.`] }, s.manualText);
+  if (!s.facts) throw new UserError("That version has no saved facts to restore.");
+  return commit(projectId, visitId, s.facts,{ trigger: "restore", input: `Restored version ${s.version}`, changes: [`Restored version ${s.version}.`] }, s.manualText);
 }
 
 export async function rerender(projectId: string, visitId: string) {
@@ -666,11 +671,8 @@ const MAX_MANUAL_CHARS = 600_000;
 
 export async function ingestManual(file: { name: string; bytes: Uint8Array }) {
   const id = newId("man");
-  const dir = path.join(UPLOAD_DIR, "_manuals");
-  mkdirSync(dir, { recursive: true, mode: 0o700 });
   const pdf = isPdf(file.bytes);
-  const storedPath = path.join(dir, `${id}${pdf ? ".pdf" : ".txt"}`);
-  writeFileSync(storedPath, file.bytes, { mode: 0o600 });
+  const storedPath = await putFile(`manuals/${id}${pdf ? ".pdf" : ".txt"}`, file.bytes, pdf ? "application/pdf" : "text/plain");
   const text = pdf ? (await extractPageTexts(file.bytes)).join("\n\n") : Buffer.from(file.bytes).toString("utf8");
   if (!text.trim()) throw new UserError("No readable text in that manual (scanned manuals are not supported yet).");
   if (text.length > MAX_MANUAL_CHARS) throw new UserError("Manual is too long to process in one pass (over 600,000 characters). Split it into sections.");

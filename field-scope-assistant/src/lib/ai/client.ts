@@ -93,6 +93,11 @@ export function structured<S extends z.ZodType>(req: StructuredRequest<S>): Prom
 }
 
 /** Tests replace the model call with a deterministic fake. */
+/** True when calls can be made (API key set, or a test double is installed). */
+export function aiAvailable(): boolean {
+  return impl !== realImpl || aiConfigured();
+}
+
 export function setStructuredImpl(fake: Impl | null) {
   impl = fake ?? realImpl;
 }

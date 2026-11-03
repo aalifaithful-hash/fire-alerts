@@ -1,42 +1,40 @@
 import { handleUpload, type HandleUploadBody } from "@vercel/blob/client";
 import { NextResponse } from "next/server";
-import { ingestPdf } from "@/lib/service";
+import * as repo from "@/lib/repo";
 import { route } from "@/lib/http";
+import { blobEnabled, projectKey } from "@/lib/storage";
+import { MAX_UPLOAD_BYTES, UserError } from "@/lib/service";
 
 type P = { pid: string };
 
-// Direct-to-Blob upload endpoint for large PDFs.
-//
-// The browser uploads the file straight to Vercel Blob storage, bypassing the
-// ~4.5 MB serverless-function request-body limit on Hobby. When the upload
-// finishes, the server downloads the PDF from Blob and ingests it into the
-// project exactly like the regular multipart upload path.
+/**
+ * Step 1 of a direct-to-Blob upload: issues a short-lived client token so the
+ * browser can PUT the PDF straight into the private "field-scope-uploads"
+ * store, bypassing the ~4.5 MB serverless request-body limit.
+ *
+ * Passcode-protected like every API route. No onUploadCompleted webhook is
+ * registered: that callback comes from Vercel's servers without the passcode
+ * cookie (and is blocked by deployment protection), so instead the browser
+ * calls POST /documents/from-blob (step 2) after upload() resolves.
+ */
 export const POST = route<P>(async (req, { pid }) => {
+  if (!blobEnabled()) throw new UserError("Direct uploads are not configured (BLOB_READ_WRITE_TOKEN is missing).");
+  await repo.getProject(pid);
   const body = (await req.json()) as HandleUploadBody;
+  const prefix = projectKey(pid, "");
   const jsonResponse = await handleUpload({
     body,
     request: req,
-    onBeforeGenerateToken: async (_pathname, clientPayload) => {
+    onBeforeGenerateToken: async (pathname) => {
+      // A token can only write inside this project's folder.
+      if (!pathname.startsWith(prefix) || pathname.includes("..") || !/\.pdf$/i.test(pathname))
+        throw new UserError("Invalid upload path.");
       return {
         allowedContentTypes: ["application/pdf"],
-        tokenPayload: JSON.stringify({
-          pid,
-          filename:
-            typeof clientPayload === "string" && clientPayload ? clientPayload : "report.pdf",
-        }),
+        maximumSizeInBytes: MAX_UPLOAD_BYTES,
+        addRandomSuffix: true,
       };
     },
-    onUploadCompleted: async ({ blob, tokenPayload }) => {
-      const payload = JSON.parse(tokenPayload || "{}") as { pid?: string; filename?: string };
-      const targetPid = payload.pid || pid;
-      // Private blobs require the read-write token to download.
-      const res = await fetch(blob.url, {
-        headers: { Authorization: `Bearer ${process.env.BLOB_READ_WRITE_TOKEN}` },
-      });
-      if (!res.ok) throw new Error(`Failed to download uploaded PDF from storage (${res.status})`);
-      const bytes = new Uint8Array(await res.arrayBuffer());
-      await ingestPdf(targetPid, { name: payload.filename || "report.pdf", bytes });
-    },
   });
-  return NextResponse.json(jsonResponse);
+  return NextResponse.json(jsonResponse, { headers: { "Cache-Control": "no-store" } });
 });

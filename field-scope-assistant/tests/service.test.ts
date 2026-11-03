@@ -4,34 +4,22 @@ import os from "node:os";
 import path from "node:path";
 import { PDFDocument, StandardFonts } from "pdf-lib";
 
-// Tests now run against the hosted Postgres database (same as production).
-// Set DATABASE_URL to run them; they are skipped without it.
-// `npm test` is not run during Vercel builds (only `next build` type-checks).
+// Tests run on real Postgres in-process (PGlite) with a fresh database per test.
+// They deliberately ignore any DATABASE_URL from the environment: these tests
+// delete data and must never run against the hosted Neon database.
+process.env.DATABASE_URL = "pglite://memory";
+delete process.env.POSTGRES_URL;
+delete process.env.BLOB_READ_WRITE_TOKEN;
 process.env.DATA_DIR = mkdtempSync(path.join(os.tmpdir(), "fsa-test-"));
 
-const { query } = await import("@/lib/db");
+const { resetLocalDbForTests } = await import("@/lib/db");
 const repo = await import("@/lib/repo");
 const svc = await import("@/lib/service");
 const { setStructuredImpl } = await import("@/lib/ai/client");
 const { blankOp } = await import("@/lib/patch");
 
-const hasDb = !!process.env.DATABASE_URL;
-const describeDb = hasDb ? describe : describe.skip;
-
-async function cleanDb() {
-  // Order matters for foreign keys; projects cascade but be explicit.
-  await query`DELETE FROM manual_conflicts`;
-  await query`DELETE FROM manuals`;
-  await query`DELETE FROM checklist_templates`;
-  await query`DELETE FROM drafts`;
-  await query`DELETE FROM evidence`;
-  await query`DELETE FROM batches`;
-  await query`DELETE FROM doc_pages`;
-  await query`DELETE FROM documents`;
-  await query`DELETE FROM visits`;
-  await query`DELETE FROM locations`;
-  await query`DELETE FROM projects`;
-}
+const describeDb = describe;
+const visitText = async (pid: string, vid: string) => (await repo.getVisit(pid, vid)).text;
 
 type Req = { system: string; content: { type: string; text?: string }[] };
 let calls: Req[] = [];
@@ -53,9 +41,9 @@ const aEquip = (room: string, type: string, quantity: number | null, over: Recor
   statusDate: null, source: "pm", carriedForward: false, ...over,
 });
 
-beforeEach(async () => {
+beforeEach(() => {
   calls = [];
-  if (hasDb) await cleanDb();
+  resetLocalDbForTests();
 });
 
 describeDb("example drying-only job end to end", () => {
@@ -85,13 +73,14 @@ describeDb("example drying-only job end to end", () => {
         { locationId: null, floor: null, unit: null, room: "Living Room", category: "extraction", text: "Extract water from flooring", rationale: null },
       ],
     }));
-    const { draft } = await svc.generateVisit(p.id, v.id);
-    expect(draft.text).toContain("Living Room");
-    expect(draft.text).toContain("Detach cabinets to allow drying");
-    expect(draft.text).toContain("1 dehumidifier (planned)");
-    expect(draft.text).toContain("CC+1 (1 crew chief + 1 subcontractor)");
-    expect(draft.text).toContain("Category: Cat 2");
-    expect(draft.text).not.toMatch(/remove|demolition|extract/i);
+    await svc.generateVisit(p.id, v.id);
+    const text = await visitText(p.id, v.id);
+    expect(text).toContain("Living Room");
+    expect(text).toContain("Detach cabinets to allow drying");
+    expect(text).toContain("1 dehumidifier (planned)");
+    expect(text).toContain("CC+1 (1 crew chief + 1 subcontractor)");
+    expect(text).toContain("Category: Cat 2");
+    expect(text).not.toMatch(/remove|demolition|extract/i);
     const f = (await repo.getVisit(p.id, v.id)).facts;
     // demo recommendation withheld, extraction offered for accept/reject only
     expect(f.recommendations.map((r) => r.category)).toEqual(["extraction"]);
@@ -137,7 +126,7 @@ describeDb("no mixing of project data", () => {
     expect(f.items[0].evidenceIds).toEqual([]); // cross-project evidence id dropped
     await expect(repo.getVisit(a.id, bv.id)).rejects.toThrow(); // visit lookup is project-scoped
     expect((await repo.listLocations(a.id)).map((l) => l.room)).toEqual(["Kitchen"]);
-    await expect(repo.setEvidenceLocation(a.id, bEvidenceId, {})).rejects.toThrow();
+    await expect(repo.setEvidenceLocation(a.id, bEvidenceId, { locationId: null })).rejects.toThrow();
   });
 });
 

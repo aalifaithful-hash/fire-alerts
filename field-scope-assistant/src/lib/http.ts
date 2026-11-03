@@ -4,6 +4,8 @@ import { COOKIE, isAuthedCookie } from "./auth";
 import { NotFound } from "./repo";
 import { UserError } from "./service";
 import { AiError, AiNotConfiguredError } from "./ai/client";
+import { DatabaseNotConfiguredError } from "./db";
+import { BlobError } from "@vercel/blob";
 
 type Ctx<P> = { params: Promise<P> };
 
@@ -35,6 +37,9 @@ export function errorResponse(e: unknown) {
   if (e instanceof ZodError) return json({ error: "Invalid input" }, 400);
   if (e instanceof AiNotConfiguredError) return json({ error: e.message, code: "NO_API_KEY" }, 503);
   if (e instanceof AiError) return json({ error: e.message, retryable: e.retryable }, 502);
+  if (e instanceof DatabaseNotConfiguredError) return json({ error: e.message, code: "NO_DATABASE" }, 503);
+  if (e instanceof BlobError)
+    return json({ error: `File storage error: ${e.message}`, code: "STORAGE", retryable: true }, 502);
   console.error("[field-scope] unexpected error:", e instanceof Error ? `${e.name}: ${e.message}` : "unknown");
   return json({ error: "Something went wrong. Please try again." }, 500);
 }
