@@ -120,3 +120,35 @@ export const ManualRulesOutput = z.object({
     }),
   ),
 });
+
+/** Reading a photo of a paper checklist (items and what is marked on the page). */
+export const ChecklistPhotoOutput = z.object({
+  readable: z.boolean(),
+  issue: z.string().nullable(),
+  title: z.string().nullable(),
+  items: z.array(
+    z.object({
+      label: z.string().describe("Checklist line exactly as printed"),
+      mark: z.enum(["checked", "unchecked", "na_marked", "unclear"]).describe("What is visibly marked on the paper — not what you think should be true"),
+      handwrittenNote: z.string().nullable(),
+      matchedTemplateItemId: z.string().nullable().describe("id of the matching template item, if a template was given"),
+    }),
+  ),
+});
+export type ChecklistPhotoOutput = z.infer<typeof ChecklistPhotoOutput>;
+
+/** Damage analysis around a marked cause of loss (suggestions for the PM, never accepted automatically). */
+export const CauseOfLossOutput = z.object({
+  visibleFindings: z.array(z.object({ text: z.string(), photoIndex: z.number().int().nullable() })),
+  suggestedAffected: z.object({
+    flooring: z.boolean().nullable(),
+    walls: z.array(z.string()).describe("Wall labels N/E/S/W that look affected; empty if unclear"),
+    ceiling: z.boolean().nullable(),
+    cabinets: z.boolean().nullable(),
+    contents: z.boolean().nullable(),
+  }),
+  migrationPath: z.string().nullable().describe("Likely path of water/smoke from the source, as a hypothesis"),
+  questions: z.array(z.string()).describe("Short questions whose answers change the scope; max 5"),
+  cannotDetermine: z.array(z.string()).describe("Things photos cannot establish (moisture content, category, hidden damage)"),
+});
+export type CauseOfLossOutput = z.infer<typeof CauseOfLossOutput>;

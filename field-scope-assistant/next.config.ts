@@ -2,7 +2,7 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   // Native / heavy server-only packages stay out of the bundle.
-  serverExternalPackages: ["@electric-sql/pglite", "unpdf", "pdf-lib", "docx"],
+  serverExternalPackages: ["@electric-sql/pglite", "unpdf", "pdf-lib", "docx", "@google/genai"],
   poweredByHeader: false,
   async headers() {
     return [

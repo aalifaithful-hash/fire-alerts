@@ -29,9 +29,10 @@ For production the app runs on **Vercel + Neon Postgres + Vercel Blob** (current
 |---|---|---|
 | `DATABASE_URL` (or `POSTGRES_URL`) | Yes | Postgres connection, set by the Neon integration. Without it, API calls return a clear 503. |
 | `BLOB_READ_WRITE_TOKEN` | Yes on Vercel | Private Blob store for PDFs and manuals, set by connecting the Blob store. Without it, uploads go through the server, which is fine locally but fails on Vercel. |
-| `ANTHROPIC_API_KEY` | For AI features | Server-side only. Without it, everything except AI analysis works and the app shows setup instructions. |
+| `AI_PROVIDER` | No (default `none`) | `anthropic` or `gemini` turns AI on with that provider's key; see "AI provider setup". |
+| `ANTHROPIC_API_KEY` / `GEMINI_API_KEY` | Only for AI | Server-side only. Without AI, everything except AI analysis works. |
 | `APP_PASSCODE` | Recommended | Passcode screen for every page and API call. |
-| `ANTHROPIC_MODEL` | No | Defaults to `claude-opus-5-5`. |
+| `ANTHROPIC_MODEL` / `GEMINI_MODEL` | No | Defaults `claude-opus-5-5` / `gemini-3.8-flash`. |
 | `DATA_DIR` | No | Local-only file storage when there is no Blob token. Default `./.data`. |
 
 Local development: `DATABASE_URL=pglite://memory npm run dev` runs real Postgres in-process (data is lost on restart), or point it at a Neon dev branch.
@@ -54,6 +55,30 @@ npm test          # 35 tests on in-process Postgres (PGlite): rules, renderers, 
                   # Tests never use DATABASE_URL from your environment, so they cannot touch the hosted DB.
 npm run typecheck
 ```
+
+## AI provider setup (AI_PROVIDER)
+
+AI is **off by default**, and the app is fully usable without it: manual drafting, PDF text extraction, the room-by-room scan, the sketch and exports. When AI is turned on, it can use either **Anthropic Claude** or **Google Gemini**. You switch with environment variables only; no code changes.
+
+| Variable | Values | Notes |
+|---|---|---|
+| `AI_PROVIDER` | `none` (default) · `anthropic` · `gemini` | Anything else is reported as "not recognized" and AI stays off. A key alone does **not** turn AI on. |
+| `ANTHROPIC_API_KEY` | key from console.anthropic.com | Used when `AI_PROVIDER=anthropic` |
+| `ANTHROPIC_MODEL` | optional, default `claude-opus-5-5` | |
+| `GEMINI_API_KEY` | key from Google AI Studio (aistudio.google.com → Get API key) | Used when `AI_PROVIDER=gemini` |
+| `GEMINI_MODEL` | optional, default `gemini-3.8-flash` | Any Gemini model ID that accepts images and PDFs |
+
+**To switch providers** (in Vercel → Project → Settings → Environment Variables, or `.env.local` locally):
+1. Set `AI_PROVIDER` to `gemini` (or `anthropic`).
+2. Set that provider's key.
+3. Redeploy.
+
+To turn AI off again, set `AI_PROVIDER=none` (or remove it) and redeploy. Settings → Setup shows which provider and model are active, or what is missing.
+
+**Gemini notes:**
+- **Default model.** `gemini-3.8-flash` is the newest stable Flash model ID listed in the official Google Gen AI SDK (`@google/genai` 2.32.0, Oct 2026). Flash-class models are multimodal (photos and PDFs), fast, and lower-cost, which fits PDF photo analysis and scope drafting. The ID is pinned rather than `gemini-flash-latest`, so behavior doesn't change underneath you. Confirm it on Google's models page before turning AI on.
+- **Free tier vs paid.** A Google AI Studio key works on the free tier without billing, but with lower rate limits. Per Google's terms, free-tier prompts and responses may be used to improve Google's products, so it isn't suitable for customer data. The paid tier (billing enabled on the key's Google Cloud project) raises the limits and keeps that content out of product improvement. Exact per-model limits are on Google's "Rate limits" page; they couldn't be checked from the build environment. **Recommendation: paid tier before real customer data.**
+- **PDF size.** Inline requests are limited to about 20 MB, so the app sends PDF chunks of at most 14 MB to Gemini (18 MB to Claude). Oversized batches are split per page automatically.
 
 ## FNOL intake and the room-by-room scan (no AI)
 

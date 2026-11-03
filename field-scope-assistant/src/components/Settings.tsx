@@ -37,11 +37,12 @@ export default function Settings() {
           {status ? (
             status.aiConfigured ? (
               <>
-                AI analysis is configured (model <span className="mono">{status.model}</span>).
+                AI analysis is on: <span className="mono">{status.aiProvider}</span> (model <span className="mono">{status.model}</span>).
               </>
             ) : (
               <>
                 <strong>AI features are off.</strong> Everything else works. See “AI features” below for what they would add.
+                {status.aiProblem ? <span className="muted"> ({status.aiProblem})</span> : null}
               </>
             )
           ) : (
@@ -66,7 +67,8 @@ export default function Settings() {
             text (Photos → View text); writing and editing the scope yourself; versions; Copy for Slack, PDF and DOCX; checklist templates.
           </p>
           <p>
-            <strong>Would be added once an Anthropic API key is configured on the server</strong> (<span className="mono">ANTHROPIC_API_KEY</span>):
+            <strong>Would be added once an AI provider is configured on the server</strong> — Anthropic Claude or Google Gemini (
+            <span className="mono">AI_PROVIDER</span> plus that provider&apos;s key):
           </p>
           <ul style={{ paddingLeft: 18 }}>
             <li>Reading the photos in uploaded PDFs and sorting them by room, floor and unit. PDFs already uploaded stay queued and are analyzed then.</li>

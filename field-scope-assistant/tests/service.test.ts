@@ -21,7 +21,7 @@ const { blankOp } = await import("@/lib/patch");
 const describeDb = describe;
 const visitText = async (pid: string, vid: string) => (await repo.getVisit(pid, vid)).text;
 
-type Req = { system: string; content: { type: string; text?: string }[] };
+type Req = { system: string; parts: { type: string; text?: string }[] };
 let calls: Req[] = [];
 function fake(responder: (req: Req) => unknown) {
   setStructuredImpl((async (req: Req) => {
@@ -29,7 +29,7 @@ function fake(responder: (req: Req) => unknown) {
     return responder(req);
   }) as never);
 }
-const promptText = (r: Req) => r.content.map((c) => c.text ?? "").join("\n");
+const promptText = (r: Req) => r.parts.map((c) => c.text ?? "").join("\n");
 
 const emptyJob = { causeOfLoss: null, sourceStatus: null, lossType: null, category: null, waterClass: null, productionDays: null, equipmentDays: null, accessRestrictions: null };
 const aItem = (room: string | null, category: string, text: string, over: Record<string, unknown> = {}) => ({
@@ -277,6 +277,6 @@ describeDb("PDF pipeline", () => {
     expect(ev.find((e) => !e.locationId)!.flags).toContain("Uncertain room assignment");
     expect((await repo.listLocations(p.id)).map((l) => l.room)).toEqual(["Closet"]); // low-confidence room not created
     expect((await repo.listDocuments(p.id))[0].status).toBe("done");
-    expect(calls.some((c) => c.content.some((b) => b.type === "document"))).toBe(true);
+    expect(calls.some((c) => c.parts.some((b) => b.type === "pdf"))).toBe(true);
   });
 });

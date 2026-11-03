@@ -1,7 +1,7 @@
 "use client";
 
 /**
- * Shown while ANTHROPIC_API_KEY is not set. Every line below was checked against
+ * Shown while no AI provider is configured (AI_PROVIDER + key). Every line below was checked against
  * the app's actual behavior without a key — keep it that way when editing.
  */
 export const WORKS_WITHOUT_KEY = [

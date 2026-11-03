@@ -19,9 +19,9 @@ import {
 } from "./schemas";
 import { todayNY, weekdayNY } from "./time";
 import type { DraftVersion, Project, Visit } from "./types";
-import { aiAvailable, AiNotConfiguredError, structured, type ContentBlock } from "./ai/client";
-import { AnalysisOutput, ChecklistOutput, CorrectionOutput, ManualRulesOutput, PdfBatchOutput } from "./ai/schemas";
-import { CHECKLIST_SYSTEM, CORRECTION_SYSTEM, MANUAL_SYSTEM, PDF_SYSTEM, visitSystem } from "./ai/prompts";
+import { aiAvailable, AiNotConfiguredError, maxInlineBytes } from "./ai/provider";
+import { ai } from "./ai/features";
+import { AnalysisOutput, PdfBatchOutput } from "./ai/schemas";
 
 export class UserError extends Error {}
 
@@ -84,7 +84,8 @@ export async function processNextBatch(projectId: string, documentId: string, re
   try {
     const source = await readStoredFile(doc.storedPath);
     const chunk = await buildChunk(source, batch.startPage, batch.endPage);
-    if (chunk.length > MAX_CHUNK_BYTES) {
+    const limit = Math.min(MAX_CHUNK_BYTES, await maxInlineBytes()); // Gemini inline limit is smaller
+    if (chunk.length > limit) {
       if (batch.endPage > batch.startPage) {
         // split oversized batch into single pages
         await repo.finishBatch(batch.id, "done", "split into single pages", batch.attempts);
@@ -95,7 +96,7 @@ export async function processNextBatch(projectId: string, documentId: string, re
         );
         return { done: false, progress: await repo.batchProgress(projectId, documentId) };
       }
-      throw new UserError("Page is too large to analyze (over 18 MB).");
+      throw new UserError(`Page is too large to analyze (over ${Math.round(limit / 1048576)} MB).`);
     }
     const pages = await repo.getPages(documentId, batch.startPage, batch.endPage);
     const locations = await repo.listLocations(projectId);
@@ -106,11 +107,7 @@ export async function processNextBatch(projectId: string, documentId: string, re
           : `<pdf_text page="${p.page}">\n${p.text.slice(0, 20000)}\n</pdf_text>`,
       )
       .join("\n");
-    const content: ContentBlock[] = [
-      { type: "document", source: { type: "base64", media_type: "application/pdf", data: Buffer.from(chunk).toString("base64") } },
-      {
-        type: "text",
-        text: `This PDF chunk contains ORIGINAL pages ${batch.startPage}–${batch.endPage} of "${doc.filename}". Chunk page 1 = original page ${batch.startPage}. Report original page numbers.
+    const promptText = `This PDF chunk contains ORIGINAL pages ${batch.startPage}–${batch.endPage} of "${doc.filename}". Chunk page 1 = original page ${batch.startPage}. Report original page numbers.
 
 Known rooms in this project (reuse these names when they match):
 ${locations.map((l) => `- ${fullLabel(l)}`).join("\n") || "- none yet"}
@@ -118,10 +115,8 @@ ${locations.map((l) => `- ${fullLabel(l)}`).join("\n") || "- none yet"}
 Selectable text extracted from these pages:
 <pdf_evidence>
 ${pageText}
-</pdf_evidence>`,
-      },
-    ];
-    const out = await structured({ schema: PdfBatchOutput, system: PDF_SYSTEM, content, effort: "medium", maxTokens: 32000 });
+</pdf_evidence>`;
+    const out = await ai.analyzePdfBatch({ pdfBase64: Buffer.from(chunk).toString("base64"), promptText });
     await saveBatchEvidence(projectId, documentId, batch, out);
     await repo.finishBatch(batch.id, "done", null, batch.attempts);
   } catch (e) {
@@ -341,20 +336,15 @@ export async function generateVisit(projectId: string, visitId: string) {
   if (!ctx.visit.fieldNotes.trim() && !ctx.evidence.length)
     throw new UserError("Add field notes or upload a CompanyCam PDF first.");
   const corrections = await correctionInputs(projectId, visitId);
-  const content: ContentBlock[] = [
-    {
-      type: "text",
-      text: `${contextBlock(ctx, { evidence: true })}
+  const contextText = `${contextBlock(ctx, { evidence: true })}
 
 <pm_field_notes>
 ${ctx.visit.fieldNotes || "(no notes for this visit)"}
 </pm_field_notes>
 ${corrections.length ? `\n<pm_corrections_so_far>\n${corrections.join("\n")}\n</pm_corrections_so_far>` : ""}
 
-Produce the structured facts for this visit.`,
-    },
-  ];
-  const out = await structured({ schema: AnalysisOutput, system: visitSystem(ctx.visit.type), content, effort: "high", maxTokens: 48000 });
+Produce the structured facts for this visit.`;
+  const out = await ai.draftVisitFacts({ visitType: ctx.visit.type, contextText });
   const facts = await analysisToFacts(projectId, ctx, out);
   const prev = ctx.prior.at(-1)?.facts ?? null;
   const { facts: guarded } = applyGuards(facts, { pmText: ctx.pmText, corpusText: ctx.corpusText, previousFacts: prev, priorFacts: ctx.prior.map((v) => v.facts) });
@@ -474,13 +464,7 @@ export async function correctVisit(projectId: string, visitId: string, text: str
   const input = text.trim();
   if (!input) throw new UserError("Type or dictate a correction.");
   const ctx = await buildContext(projectId, visitId);
-  const out = await structured({
-    schema: CorrectionOutput,
-    system: CORRECTION_SYSTEM,
-    content: [{ type: "text", text: `${contextBlock(ctx, { evidence: false })}\n\n<pm_correction>\n${input}\n</pm_correction>` }],
-    effort: "medium",
-    maxTokens: 16000,
-  });
+  const out = await ai.interpretCorrection({ contextText: `${contextBlock(ctx, { evidence: false })}\n\n<pm_correction>\n${input}\n</pm_correction>` });
   if (out.intent === "show_full") return { kind: "show_full" as const };
   if (out.intent === "clarify") return { kind: "clarify" as const, clarification: out.clarification ?? "Which room do you mean?" };
 
@@ -507,17 +491,8 @@ export async function correctVisit(projectId: string, visitId: string, text: str
 export async function runChecklist(projectId: string, visitId: string, templateId: string) {
   const tpl = await repo.getTemplate(templateId);
   const ctx = await buildContext(projectId, visitId);
-  const out = await structured({
-    schema: ChecklistOutput,
-    system: CHECKLIST_SYSTEM,
-    content: [
-      {
-        type: "text",
-        text: `${contextBlock(ctx, { evidence: false })}\n\n<pm_field_notes>\n${ctx.pmText}\n</pm_field_notes>\n\n<checklist name="${tpl.name}">\n${tpl.items.map((i) => `${i.id}: ${i.label}`).join("\n")}\n</checklist>`,
-      },
-    ],
-    effort: "medium",
-    maxTokens: 8000,
+  const out = await ai.fillChecklist({
+    contextText: `${contextBlock(ctx, { evidence: false })}\n\n<pm_field_notes>\n${ctx.pmText}\n</pm_field_notes>\n\n<checklist name="${tpl.name}">\n${tpl.items.map((i) => `${i.id}: ${i.label}`).join("\n")}\n</checklist>`,
   });
   const entries = guardChecklist(tpl.items, out.entries, ctx.pmText);
   const facts = { ...ctx.visit.facts, checklist: { templateId, entries } };
@@ -697,17 +672,8 @@ export async function extractManualRules(id: string) {
   const { manual, text } = await repo.getManualText(id);
   const existing = (await repo.listManuals()).filter((m) => m.id !== id).flatMap((m) => m.rules.map((r) => ({ ...r, manualId: m.id, manual: m.name })));
   try {
-    const out = await structured({
-      schema: ManualRulesOutput,
-      system: MANUAL_SYSTEM,
-      content: [
-        {
-          type: "text",
-          text: `<existing_rules>\n${existing.map((r) => `${r.id} [${r.manual} / ${r.topic}] ${r.rule}`).join("\n") || "(none)"}\n</existing_rules>\n\n<manual_text name="${manual.name}">\n${text}\n</manual_text>`,
-        },
-      ],
-      effort: "medium",
-      maxTokens: 32000,
+    const out = await ai.extractManualRules({
+      promptText: `<existing_rules>\n${existing.map((r) => `${r.id} [${r.manual} / ${r.topic}] ${r.rule}`).join("\n") || "(none)"}\n</existing_rules>\n\n<manual_text name="${manual.name}">\n${text}\n</manual_text>`,
     });
     const rules = out.rules.map((r, i) => ({ id: `${id}_r${i + 1}`, topic: r.topic, rule: r.rule }));
     await repo.setManualRules(id, rules, "ready");

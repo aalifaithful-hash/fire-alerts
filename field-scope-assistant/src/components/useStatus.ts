@@ -4,7 +4,9 @@ import { api } from "./api";
 
 export interface Status {
   aiConfigured: boolean;
-  model: string;
+  model: string | null;
+  aiProvider?: "none" | "anthropic" | "gemini";
+  aiProblem?: string | null;
   passcodeEnabled: boolean;
   blobUploads?: boolean;
   databaseConfigured?: boolean;

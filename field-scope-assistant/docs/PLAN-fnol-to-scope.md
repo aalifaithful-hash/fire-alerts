@@ -4,6 +4,7 @@ Status: **phases a1–a3, a7, the data-model split and the room workflow (c, d1,
 
 Revision 2 (Nov 3): adds a professional critique, sketch output, the room-by-room scan workflow, and customer-preference exclusions.
 Revision 3 (Nov 3): owner decision to proceed with professional defaults. See "Build status" and "Defaults chosen" below.
+Revision 4 (Nov 3): pluggable AI provider (Claude or Gemini), still switched off. See "AI provider" below.
 
 ## Build status (Nov 3, revision 3)
 
@@ -275,6 +276,54 @@ The scope is always editable, whether or not there are open questions. Modificat
 |---|---|---|
 | h1. Offline capture | No AI | Notes, measurements, readings, room analysis and photos saved on the phone and synced when there's signal. |
 | h2. Roles | No AI | PM, estimator and crew chief views, replacing the single passcode for teams. |
+
+## AI provider (Claude or Gemini) — built, switched off
+
+Revision 4 (Nov 3): the AI layer can use either Claude (Anthropic) or Gemini (Google). **AI stays off.** No key has been added, and no Vercel setting has changed. With no provider set, the app behaves exactly as before: manual drafting, PDF text extraction, the room workflow and the sketch all work.
+
+**Design: one interface, two implementations**
+
+| File | Role |
+|---|---|
+| `src/lib/ai/provider.ts` | The interface. `AiProvider.structured({schema, system, parts, effort, maxTokens})` takes text, PDF and image parts and returns JSON checked against a Zod schema. It also handles provider selection from env vars, errors (`AiNotConfiguredError`, `AiError` with retryable) and the inline size limit per provider. |
+| `src/lib/ai/anthropic.ts` | The Claude implementation: streaming, server-side model fallback, structured output, effort. Default model `claude-opus-5-5`. |
+| `src/lib/ai/gemini.ts` | The Gemini implementation (`@google/genai`): JSON-schema output, thinking level mapped from effort, PDF and images sent as inline data, errors mapped to the app's messages. Default model `gemini-3.8-flash`. |
+| `src/lib/ai/features.ts` | Every AI use, written once against the interface: PDF photo analysis and room sorting, visit/scope drafting, corrections and AI questions/suggestions, checklist auto-fill, manual-rule extraction, reading a paper-checklist photo, and cause-of-loss analysis. The prompts and schemas are shared, so both providers get the same instructions and the same deterministic guards on their output. |
+
+Selection is by env var only:
+
+| Variable | Values |
+|---|---|
+| `AI_PROVIDER` | `none` (default), `anthropic`, `gemini` |
+| `ANTHROPIC_API_KEY` | needed when `AI_PROVIDER=anthropic` |
+| `GEMINI_API_KEY` (or `GOOGLE_API_KEY`) | needed when `AI_PROVIDER=gemini` |
+| `ANTHROPIC_MODEL`, `GEMINI_MODEL` | optional model overrides |
+
+A key on its own does **not** turn AI on. `AI_PROVIDER` must name the provider. This is a change from before: Claude now also needs `AI_PROVIDER=anthropic`. An unknown value, or a provider without its key, shows the exact problem under Settings → AI, and the app stays in no-key mode.
+
+**Gemini model: `gemini-3.8-flash`**
+- It's the newest stable Flash-class model in the Google GenAI SDK's model list (v2.32.0).
+- It's multimodal: it reads PDF pages and photos natively, which the photo report and checklist-photo features need.
+- It supports JSON-schema structured output and adjustable thinking.
+- It's much cheaper and faster per page than Pro-class models, which matters for 50–200 page CompanyCam reports split into batches.
+- To switch, set `GEMINI_MODEL`, for example to a Pro model for harder reports. Check the model list in Google AI Studio before switching; Google renames preview models often.
+
+**Google setup needed (later, by the owner)**
+1. Sign in at Google AI Studio (aistudio.google.com), choose **Get API key** and create a key in a Google Cloud project.
+2. **Free tier vs paid:**
+   - The free tier has low per-minute and per-day request limits, so a long PDF may need retries.
+   - On the free tier, Google may use prompts and responses to improve its products. Customer addresses, claim details and photos should not go through it.
+   - Paid tier (billing enabled on the project): higher limits, and data isn't used for product improvement. **Recommended for real jobs.**
+   - Exact current limits are on Google's rate-limits page. They couldn't be checked from this build environment.
+3. Inline PDF limit: the app sends at most **14 MB** per request to Gemini (18 MB to Claude). Larger reports are already split into page batches.
+
+**Exact switch steps (needs the owner's go-ahead; not done)**
+1. Vercel → project → Settings → Environment Variables (Production and Preview):
+   - `AI_PROVIDER=gemini`
+   - `GEMINI_API_KEY=<key from Google AI Studio>`
+   - optional `GEMINI_MODEL`
+2. Redeploy. Settings → AI should then read "AI analysis is on: gemini (gemini-3.8-flash)".
+3. To go back to Claude, set `AI_PROVIDER=anthropic` and `ANTHROPIC_API_KEY`. To turn AI off, set `AI_PROVIDER=none` or remove it. Redeploy after each change.
 
 ## Suggested order
 
