@@ -29,7 +29,7 @@ export default function SetupBanner() {
     <details className="card warn" style={{ marginBottom: 14 }}>
       <summary>
         <span>
-          AI is off (no Anthropic API key) — <u>see what works now</u>
+          AI features are off — <u>see what works now</u>
         </span>
       </summary>
       <div className="small" style={{ marginTop: 8 }}>
@@ -39,13 +39,13 @@ export default function SetupBanner() {
             <li key={x}>{x}</li>
           ))}
         </ul>
-        <strong>Needs the Anthropic API key</strong>
+        <strong>AI features (off until a key is added)</strong>
         <ul style={{ paddingLeft: 18, margin: "4px 0 10px" }}>
           {NEEDS_KEY.map((x) => (
             <li key={x}>{x}</li>
           ))}
         </ul>
-        <a href="/settings#ai-key">How to turn on AI →</a>
+        <a href="/settings#ai-key">More about the AI features →</a>
       </div>
     </details>
   );

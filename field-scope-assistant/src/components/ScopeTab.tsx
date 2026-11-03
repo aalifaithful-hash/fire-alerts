@@ -249,22 +249,23 @@ export default function ScopeTab(p: Props) {
             📄 CompanyCam PDF ({ws.documents.length})
           </button>
         </div>
-        <button className="btn primary big" disabled={!!busy || !p.aiReady} onClick={generate}>
-          {busy === "generate" ? (
-            <>
-              <span className="spinner" /> Reading notes and photos…
-            </>
-          ) : !p.aiReady ? (
-            "AI draft — needs the Anthropic API key"
-          ) : v.doc ? (
-            "Regenerate draft from notes"
-          ) : (
-            "Generate draft"
-          )}
-        </button>
+        {/* AI-only: shown only when a key is configured. */}
+        {p.aiReady && (
+          <button className="btn primary big" disabled={!!busy} onClick={generate}>
+            {busy === "generate" ? (
+              <>
+                <span className="spinner" /> Reading notes and photos…
+              </>
+            ) : v.doc ? (
+              "Regenerate draft from notes"
+            ) : (
+              "Generate draft"
+            )}
+          </button>
+        )}
         {!p.aiReady && (
           <p className="small muted">
-            Your notes are saved. Without the AI key you can still write the scope yourself — see <strong>Scope</strong> below.
+            Notes save automatically. Write the scope in the <strong>Scope</strong> section below.
           </p>
         )}
         {p.aiReady && v.doc && <p className="small muted">Regenerating keeps your direct edits and accepted recommendations. For small fixes use the correction box below.</p>}
@@ -284,7 +285,7 @@ export default function ScopeTab(p: Props) {
       )}
 
       {/* Questions */}
-      {openQs.length > 0 && (
+      {p.aiReady && openQs.length > 0 && (
         <>
           <h2>Questions that affect the scope</h2>
           {openQs.map((q) => (
@@ -832,6 +833,7 @@ function ChecklistBlock(p: {
     <>
       <h2>Checklist information</h2>
       <div className="card stack">
+        {p.aiReady ? (
         <div className="row">
           <select className="in grow" value={tpl} onChange={(e) => setTpl(e.target.value)} aria-label="Checklist template">
             {sorted.map((t) => (
@@ -840,10 +842,16 @@ function ChecklistBlock(p: {
               </option>
             ))}
           </select>
-          <button className="btn" disabled={p.busy || !tpl || !p.aiReady} onClick={() => p.onRun(tpl)}>
-            {p.aiReady ? "Fill checklist" : "Fill checklist (needs AI key)"}
+          <button className="btn" disabled={p.busy || !tpl} onClick={() => p.onRun(tpl)}>
+            Fill checklist
           </button>
         </div>
+        ) : (
+          <p className="small">
+            Filling a checklist from your notes is an AI feature and is off. You can edit checklist templates in Settings; checklist
+            items you need now can be added to the scope as bullets.
+          </p>
+        )}
         <p className="small muted">Applicable ≠ completed. Items are only “completed” when your notes say so. Edit templates in Settings.</p>
         {checklistText && (
           <>

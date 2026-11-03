@@ -41,7 +41,7 @@ export default function Settings() {
               </>
             ) : (
               <>
-                <strong>AI is off: ANTHROPIC_API_KEY is not set.</strong> Everything else works — see the steps below to turn AI on.
+                <strong>AI features are off.</strong> Everything else works. See “AI features” below for what they would add.
               </>
             )
           ) : (
@@ -59,38 +59,23 @@ export default function Settings() {
 
         {err && <div className="card danger">{err}</div>}
 
-        <h2 id="ai-key">Turning on AI</h2>
+        <h2 id="ai-key">AI features (off)</h2>
         <div className="card small stack">
           <p>
-            AI features use an Anthropic API key. It is billed by Anthropic per use (separate from Vercel) and stays on the server — it is
-            never sent to phones or browsers.
+            <strong>Works now, without AI:</strong> projects, rooms, visits and history; field notes (typed or dictated); PDF uploads with page
+            text (Photos → View text); writing and editing the scope yourself; versions; Copy for Slack, PDF and DOCX; checklist templates.
           </p>
-          <ol style={{ paddingLeft: 18 }}>
-            <li>
-              Sign up or sign in at <span className="mono">console.anthropic.com</span>.
-            </li>
-            <li>Under Billing, add a payment method (and credits if asked). Keys don’t work until billing is set up.</li>
-            <li>
-              Under API Keys, create a key and copy it (starts with <span className="mono">sk-ant-</span>). You only see it once.
-            </li>
-            <li>
-              In Vercel: project <strong>fire-alerts</strong> → Settings → Environment Variables → add <span className="mono">ANTHROPIC_API_KEY</span>{" "}
-              with the key, for Production (and Preview if you use preview links).
-            </li>
-            <li>
-              Redeploy (Deployments → latest → Redeploy). Environment variables only apply to new deployments. This page then shows “AI analysis
-              is configured”.
-            </li>
-          </ol>
           <p>
-            <strong>What it unlocks:</strong> reading PDF photos and sorting them by room (PDFs already uploaded are analyzed the next time you open the Photos tab), AI-drafted scopes,
-            plain-language corrections, AI questions and suggestions, checklist auto-fill, and manual rule extraction. Model:{" "}
-            <span className="mono">{status?.model ?? "claude-opus-5-5"}</span>.
+            <strong>Would be added once an Anthropic API key is configured on the server</strong> (<span className="mono">ANTHROPIC_API_KEY</span>):
           </p>
-          <p className="muted">
-            Recommended at the same time: set <span className="mono">APP_PASSCODE</span> so only people with the passcode can open customer data —
-            the app is currently reachable by anyone with the link.
-          </p>
+          <ul style={{ paddingLeft: 18 }}>
+            <li>Reading the photos in uploaded PDFs and sorting them by room, floor and unit. PDFs already uploaded stay queued and are analyzed then.</li>
+            <li>Drafting the scope from your notes and photos, in the format for each visit type.</li>
+            <li>Plain-language corrections such as “Bathroom is dry”, plus questions and suggestions about the scope.</li>
+            <li>Filling checklists from your notes.</li>
+            <li>Extracting reusable rules from uploaded company manuals.</li>
+          </ul>
+          <p className="muted">Nothing here needs to change for the app to keep working without AI.</p>
         </div>
 
         <h2>Checklist templates</h2>
@@ -185,9 +170,13 @@ export default function Settings() {
             }
           }}
         />
-        <button className="btn" disabled={!!busy || !status?.aiConfigured} onClick={() => fileRef.current?.click()}>
-          {busy === "upload" ? "Reading manual…" : "Upload manual"}
-        </button>
+        {status?.aiConfigured ? (
+          <button className="btn" disabled={!!busy} onClick={() => fileRef.current?.click()}>
+            {busy === "upload" ? "Reading manual…" : "Upload manual"}
+          </button>
+        ) : (
+          <p className="small muted">Manual uploads turn into rules with AI, which is off. Nothing to do here for now.</p>
+        )}
         {conflicts.length > 0 && (
           <div className="card warn" style={{ marginTop: 10 }}>
             <strong>Conflicting rules ({conflicts.length})</strong>

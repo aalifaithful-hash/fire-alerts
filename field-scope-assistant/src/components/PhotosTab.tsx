@@ -114,8 +114,8 @@ export default function PhotosTab({ ws, projectId, reload, flash, openEvidence, 
       </button>
       {!aiReady && (
         <p className="small muted" style={{ marginTop: 6 }}>
-          Without the AI key, PDFs are stored and their selectable text is extracted (tap “View text”). Once the key is set, reading the photos and
-          sorting them by room starts the next time you open this tab.
+          PDFs are stored and their selectable text is extracted (tap “View text”). Reading the photos and sorting them by room is an AI
+          feature and is off; uploads are kept so they can be analyzed later.
         </p>
       )}
       {err && <div className="card danger" style={{ marginTop: 10 }}>{err}</div>}
@@ -147,7 +147,7 @@ export default function PhotosTab({ ws, projectId, reload, flash, openEvidence, 
             <div className="small">
               <strong>Photo analysis (AI):</strong>{" "}
               {!aiReady && pr.done === 0 && pr.failed === 0
-                ? `waiting for the Anthropic API key (${pr.total} page batch${pr.total === 1 ? "" : "es"} queued)`
+                ? `off — ${pr.total} page batch${pr.total === 1 ? "" : "es"} kept for later (not an error)`
                 : `${pr.done} of ${pr.total} page batch${pr.total === 1 ? "" : "es"} done${pr.failed ? ` · ${pr.failed} failed` : ""}${msg ? ` · ${msg}` : ""}`}
             </div>
             {aiReady && (

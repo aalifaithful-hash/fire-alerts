@@ -44,13 +44,7 @@ Verified behavior with no `ANTHROPIC_API_KEY`:
 - **Waits for the key:** AI photo analysis. Uploaded PDFs show "Photo analysis (AI): waiting for the Anthropic API key", and their batches stay queued (they are not failed). They run the next time the Photos tab is opened after the key is added.
 - **Needs the key:** AI-drafted scopes, plain-language corrections, AI questions and suggestions, checklist auto-fill, and company-manual rule extraction.
 
-**Turning AI on:**
-1. Sign up at console.anthropic.com and add a payment method under Billing.
-2. Create an API key.
-3. In Vercel, go to fire-alerts → Settings → Environment Variables and add `ANTHROPIC_API_KEY` (Production, plus Preview if used).
-4. Redeploy. Environment variables only apply to new deployments.
-
-The in-app Settings page has the same steps.
+**Turning AI on later:** set `ANTHROPIC_API_KEY` as a server environment variable and redeploy. Nothing else in the app changes. This is on hold for now by the owner's decision.
 
 ### Tests
 
