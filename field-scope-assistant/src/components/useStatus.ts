@@ -6,6 +6,8 @@ export interface Status {
   aiConfigured: boolean;
   model: string;
   passcodeEnabled: boolean;
+  blobUploads?: boolean;
+  databaseConfigured?: boolean;
 }
 export function useStatus() {
   const [s, setS] = useState<Status | null>(null);

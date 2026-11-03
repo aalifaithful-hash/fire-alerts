@@ -27,18 +27,48 @@ export async function api<T = unknown>(url: string, opts: { method?: string; bod
 }
 
 /**
- * Upload with progress (fetch has no upload progress events).
+ * Uploads a CompanyCam PDF to a project.
  *
- * For project document uploads, files larger than ~4 MB are sent straight to
- * Vercel Blob storage, bypassing the ~4.5 MB serverless-function
- * request-body limit. Smaller files use the regular multipart upload.
+ * - `direct` (server has BLOB_READ_WRITE_TOKEN): the browser sends the file
+ *   straight to the private Vercel Blob store (multipart for large files, with
+ *   real progress), then asks the server to ingest it from Blob. Works for any
+ *   size up to 200 MB and never hits the ~4.5 MB serverless body limit.
+ * - otherwise: regular multipart POST through the server (local/dev setups).
  */
-export function uploadWithProgress<T>(url: string, form: FormData, onProgress: (pct: number) => void): Promise<T> {
-  const file = form.get("file");
-  const docsMatch = url.match(/\/api\/projects\/([^/]+)\/documents$/);
-  if (file instanceof File && docsMatch && file.size > 4 * 1024 * 1024) {
-    return uploadPdfViaBlob<T>(docsMatch[1], file, onProgress);
+export async function uploadProjectPdf<T>(
+  projectId: string,
+  file: File,
+  onProgress: (pct: number) => void,
+  opts: { direct: boolean },
+): Promise<T> {
+  if (opts.direct) {
+    const { upload } = await import("@vercel/blob/client");
+    onProgress(0);
+    const safeName = file.name.replace(/[^a-z0-9._-]+/gi, "-").replace(/^-+|-+$/g, "").slice(0, 80) || "report";
+    const pathname = `projects/${projectId}/${safeName.replace(/\.pdf$/i, "")}.pdf`;
+    let blob: { url: string; pathname: string };
+    try {
+      blob = await upload(pathname, file, {
+        access: "private",
+        contentType: "application/pdf",
+        handleUploadUrl: `/api/projects/${projectId}/documents/blob`,
+        multipart: file.size > 8 * 1024 * 1024,
+        onUploadProgress: (e) => onProgress(Math.min(99, Math.round(e.percentage))),
+      });
+    } catch (e) {
+      throw new ApiError(`Upload to storage failed: ${(e as Error).message}`, 0, "STORAGE", true);
+    }
+    onProgress(100);
+    // Ingest (text extraction + page batches) runs on the server from Blob.
+    return api<T>(`/api/projects/${projectId}/documents/from-blob`, { body: { url: blob.url, pathname: blob.pathname, filename: file.name } });
   }
+  const form = new FormData();
+  form.append("file", file);
+  return uploadWithProgress<T>(`/api/projects/${projectId}/documents`, form, onProgress);
+}
+
+/** Multipart upload with progress (fetch has no upload progress events). */
+export function uploadWithProgress<T>(url: string, form: FormData, onProgress: (pct: number) => void): Promise<T> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open("POST", url);
@@ -49,39 +79,12 @@ export function uploadWithProgress<T>(url: string, form: FormData, onProgress: (
         data = JSON.parse(xhr.responseText);
       } catch {}
       if (xhr.status >= 200 && xhr.status < 300) resolve(data as T);
+      else if (xhr.status === 413) reject(new ApiError("This PDF is too large for a direct server upload. Ask for Blob uploads to be enabled.", 413));
       else reject(new ApiError(data.error ?? `Upload failed (${xhr.status})`, xhr.status));
     };
     xhr.onerror = () => reject(new ApiError("Upload failed — check your connection.", 0, undefined, true));
     xhr.send(form);
   });
-}
-
-/**
- * Upload a large PDF directly to Vercel Blob storage. The server ingests the
- * PDF from Blob when the upload completes. Returns the same { document }
- * shape the caller expects.
- *
- * Note: `access: "public"` is required by the @vercel/blob client types, but
- * when using handleUploadUrl the server's handleUpload controls the actual
- * access. The server does not specify access, so the private
- * "field-scope-uploads" store default keeps blobs private.
- */
-async function uploadPdfViaBlob<T>(pid: string, file: File, onProgress: (pct: number) => void): Promise<T> {
-  const { upload } = await import("@vercel/blob/client");
-  onProgress(0);
-  await upload(`projects/${pid}/${Date.now()}.pdf`, file, {
-    access: "public",
-    handleUploadUrl: `/api/projects/${pid}/documents/blob`,
-    clientPayload: file.name,
-  });
-  onProgress(100);
-  // The server ingests the PDF in onUploadCompleted before upload() resolves.
-  const ws = await api<{ documents: Array<{ id: string; filename: string; scannedPages: number; pageCount: number }> }>(
-    `/api/projects/${pid}`,
-  );
-  const doc = ws.documents.find((d) => d.filename === file.name) ?? ws.documents[ws.documents.length - 1];
-  if (!doc) throw new ApiError("Upload completed but the document was not found. Please reload.", 500);
-  return { document: doc } as T;
 }
 
 export const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));

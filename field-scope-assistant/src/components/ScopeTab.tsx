@@ -1,6 +1,7 @@
 "use client";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import MicButton from "./MicButton";
+import { useNotesAutosave } from "./useNotesAutosave";
 import Sheet from "./Sheet";
 import { api, ApiError } from "./api";
 import { ACCESS_OPTIONS, CATEGORY_LABEL, locLabel, SOURCE_LABEL, STATUS_LABEL } from "./labels";
@@ -32,7 +33,6 @@ interface Props {
 export default function ScopeTab(p: Props) {
   const { ws, projectId, visitId } = p;
   const [data, setData] = useState<VisitData | null>(null);
-  const [notes, setNotes] = useState("");
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState("");
   const [msg, setMsg] = useState<{ kind: "clarify" | "changes"; lines: string[] } | null>(null);
@@ -40,16 +40,17 @@ export default function ScopeTab(p: Props) {
   const [editing, setEditing] = useState<{ item?: ScopeItem; equip?: Equipment } | null>(null);
   const [textEdit, setTextEdit] = useState<string | null>(null);
   const [newVisit, setNewVisit] = useState(false);
-  const notesDirty = useRef(false);
   const base = `/api/projects/${projectId}/visits/${visitId}`;
+  const notesSave = useNotesAutosave(visitId ? base : null);
+  const notes = notesSave.value;
+  const loadNotes = notesSave.load;
 
   const load = useCallback(async () => {
     if (!visitId) return setData(null);
     const d = await api<VisitData>(base);
     setData(d);
-    setNotes(d.visit.fieldNotes);
-    notesDirty.current = false;
-  }, [base, visitId]);
+    loadNotes(d.visit.fieldNotes);
+  }, [base, visitId, loadNotes]);
 
   useEffect(() => {
     setMsg(null);
@@ -61,20 +62,6 @@ export default function ScopeTab(p: Props) {
     if (!visitId && !ws.visits.length) setNewVisit(true);
   }, [visitId, ws.visits.length]);
 
-  const saveNotes = useCallback(
-    async (value: string) => {
-      if (!visitId) return;
-      notesDirty.current = false;
-      await api(base, { method: "PATCH", body: { fieldNotes: value } });
-    },
-    [base, visitId],
-  );
-  useEffect(() => {
-    if (!notesDirty.current) return;
-    const t = setTimeout(() => saveNotes(notes).catch(() => {}), 900);
-    return () => clearTimeout(t);
-  }, [notes, saveNotes]);
-
   const run = async (label: string, fn: () => Promise<VisitData | void>) => {
     setBusy(label);
     setError("");
@@ -82,7 +69,7 @@ export default function ScopeTab(p: Props) {
       const d = await fn();
       if (d) {
         setData(d);
-        if (!notesDirty.current) setNotes(d.visit.fieldNotes);
+        loadNotes(d.visit.fieldNotes); // ignored while the PM has unsaved typing
       }
       return d;
     } catch (e) {
@@ -95,7 +82,7 @@ export default function ScopeTab(p: Props) {
 
   const generate = () =>
     run("generate", async () => {
-      if (notesDirty.current) await saveNotes(notes);
+      if (!(await notesSave.flush())) throw new ApiError("Your notes could not be saved — check your connection and try again.", 0);
       const d = await api<VisitData>(`${base}/generate`, { method: "POST" });
       setMsg(null);
       p.reload();
@@ -237,19 +224,27 @@ export default function ScopeTab(p: Props) {
           style={{ minHeight: 150 }}
           placeholder="Cause of loss, what you see, what needs to happen. E.g. “Pipe burst above. Source repaired. Cat 2. Living room flooring and walls wet. Drying only. CC+1, three days equipment. One dehumidifier in the living room…”"
           value={notes}
-          onChange={(e) => {
-            notesDirty.current = true;
-            setNotes(e.target.value);
-          }}
-          onBlur={() => notesDirty.current && saveNotes(notes)}
+          onChange={(e) => notesSave.setValue(e.target.value)}
+          onBlur={() => void notesSave.flush()}
+          aria-label="Field notes"
         />
+        <div className="row small" aria-live="polite" data-testid="notes-save-state">
+          {notesSave.state === "saving" && <span className="muted"><span className="spinner" /> Saving…</span>}
+          {notesSave.state === "dirty" && <span className="muted">Unsaved changes…</span>}
+          {notesSave.state === "saved" && (
+            <span style={{ color: "var(--green)" }}>
+              ✓ Saved {notesSave.savedAt?.toLocaleTimeString("en-US", { timeZone: "America/New_York", hour: "numeric", minute: "2-digit" })}
+            </span>
+          )}
+          {notesSave.state === "error" && <span style={{ color: "var(--fire)" }}>Not saved — check your connection.</span>}
+          {(notesSave.state === "dirty" || notesSave.state === "error") && (
+            <button type="button" className="btn sm" onClick={() => void notesSave.flush()}>
+              Save notes now
+            </button>
+          )}
+        </div>
         <div className="row">
-          <MicButton
-            onText={(t) => {
-              notesDirty.current = true;
-              setNotes((n) => (n ? `${n.trimEnd()} ${t}` : t));
-            }}
-          />
+          <MicButton onText={(t) => notesSave.setValue((n) => (n ? `${n.trimEnd()} ${t}` : t))} />
           <button className="btn" onClick={p.goPhotos}>
             📄 CompanyCam PDF ({ws.documents.length})
           </button>

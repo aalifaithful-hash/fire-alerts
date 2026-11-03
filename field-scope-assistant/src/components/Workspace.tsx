@@ -89,7 +89,7 @@ export default function Workspace({ projectId }: { projectId: string }) {
       <main className="page">
         {status && !status.aiConfigured && tab !== "info" && <SetupBanner />}
         {tab === "scope" && <ScopeTab {...common} visitId={visitId} openVisit={openVisit} aiReady={!!status?.aiConfigured} goPhotos={() => pickTab("photos")} />}
-        {tab === "photos" && <PhotosTab {...common} aiReady={!!status?.aiConfigured} />}
+        {tab === "photos" && <PhotosTab {...common} aiReady={!!status?.aiConfigured} blobReady={status ? !!status.blobUploads : null} />}
         {tab === "rooms" && <RoomsTab {...common} />}
         {tab === "history" && <HistoryTab {...common} visitId={visitId} openVisit={(id) => { openVisit(id); pickTab("scope"); }} />}
         {tab === "info" && <InfoTab {...common} />}

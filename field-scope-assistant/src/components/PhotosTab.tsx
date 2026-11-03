@@ -1,6 +1,6 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
-import { api, ApiError, sleep, uploadWithProgress } from "./api";
+import { api, ApiError, sleep, uploadProjectPdf } from "./api";
 import { locLabel } from "./labels";
 import type { WorkspaceData } from "./types";
 import type { Evidence } from "@/lib/repo";
@@ -12,10 +12,11 @@ interface Props {
   flash: (m: string) => void;
   openEvidence: (id: string) => void;
   aiReady: boolean;
+  blobReady: boolean | null; // null until /api/status has loaded
 }
 type Prog = { total: number; done: number; failed: number; pending: number; errors: string[] };
 
-export default function PhotosTab({ ws, projectId, reload, flash, openEvidence, aiReady }: Props) {
+export default function PhotosTab({ ws, projectId, reload, flash, openEvidence, aiReady, blobReady }: Props) {
   const [upload, setUpload] = useState<number | null>(null);
   const [running, setRunning] = useState<Record<string, string>>({}); // docId -> status message
   const [prog, setProg] = useState<Record<string, Prog>>({});
@@ -86,13 +87,9 @@ export default function PhotosTab({ ws, projectId, reload, flash, openEvidence, 
     setErr("");
     setUpload(0);
     try {
-      const form = new FormData();
-      form.append("file", f);
-      const r = await uploadWithProgress<{ document: { id: string; scannedPages: number; pageCount: number } }>(
-        `/api/projects/${projectId}/documents`,
-        form,
-        setUpload,
-      );
+      const r = await uploadProjectPdf<{ document: { id: string; scannedPages: number; pageCount: number } }>(projectId, f, setUpload, {
+        direct: !!blobReady,
+      });
       setUpload(null);
       await reload();
       if (r.document.scannedPages) flash(`${r.document.scannedPages} of ${r.document.pageCount} pages have no selectable text — they will be read visually.`);
@@ -110,7 +107,7 @@ export default function PhotosTab({ ws, projectId, reload, flash, openEvidence, 
   return (
     <div>
       <input ref={fileRef} type="file" accept="application/pdf,.pdf" className="hide" onChange={(e) => e.target.files?.[0] && onFile(e.target.files[0])} />
-      <button className="btn primary big" disabled={upload !== null} onClick={() => fileRef.current?.click()}>
+      <button className="btn primary big" disabled={upload !== null || blobReady === null} onClick={() => fileRef.current?.click()}>
         {upload !== null ? `Uploading… ${upload}%` : "Upload CompanyCam PDF"}
       </button>
       {!aiReady && <p className="small muted" style={{ marginTop: 6 }}>Uploads are stored and their text extracted; photo analysis starts once the AI key is set.</p>}

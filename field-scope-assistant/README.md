@@ -15,31 +15,33 @@ cp .env.example .env.local      # then set ANTHROPIC_API_KEY
 npm run dev                     # http://localhost:3000
 ```
 
-For production: `npm run build && npm start`. To use the app from your phone on site, deploy it to any Node host that has a persistent disk (a small VPS, Render, Fly.io or Railway with a volume), or run it on a machine you can reach. Set `APP_PASSCODE` whenever the app is reachable by anyone else.
+For production the app runs on **Vercel + Neon Postgres + Vercel Blob** (current setup). It also runs on any Node host with a Postgres database.
 
-### Hosting on Railway (no computer needed)
+### Hosting on Vercel (current)
 
-`railway.json` sets the build, start command and health check (`/api/health`). In Railway:
-1. **New Project → Deploy from GitHub repo →** `fire-alerts`.
-2. Service **Settings → Source**: Root Directory `field-scope-assistant`, Branch `claude/field-scope-assistant`.
-3. **Variables**: `ANTHROPIC_API_KEY`, `APP_PASSCODE`.
-4. Add a **Volume** to the service mounted at `/data`. The app finds it through `RAILWAY_VOLUME_MOUNT_PATH`. Without a volume, data is lost on every redeploy.
-5. **Settings → Networking → Generate Domain**, then open that URL on your phone.
+- **Database:** Neon Postgres connected to the project. The integration sets `DATABASE_URL` / `POSTGRES_URL`. Tables are created and migrated automatically on first request; migrations only add columns or defaults and never drop data.
+- **Files:** a **private** Vercel Blob store connected to the project, which sets `BLOB_READ_WRITE_TOKEN`. The browser uploads PDFs straight to Blob (any size up to 200 MB, so there is no 4.5 MB function-body limit). The server then reads the PDF from Blob to extract text and analyze pages. There are no public file URLs.
+- **Links:** open the **production domain**. Deployment-specific URLs (`fire-alerts-<hash>-<team>.vercel.app`) are behind Vercel Deployment Protection, which shows a Vercel sign-in page to anyone not logged in to Vercel. Use `APP_PASSCODE` to protect the app itself.
 
 ### Environment variables
 
 | Variable | Required | Purpose |
 |---|---|---|
-| `ANTHROPIC_API_KEY` | For AI features | Server-side only. Used for PDF reading, drafting, corrections, checklists and manual rule extraction. Without it the app still works for projects, rooms, notes, uploads, manual bullet editing and exports, and it shows setup instructions. |
+| `DATABASE_URL` (or `POSTGRES_URL`) | Yes | Postgres connection, set by the Neon integration. Without it, API calls return a clear 503. |
+| `BLOB_READ_WRITE_TOKEN` | Yes on Vercel | Private Blob store for PDFs and manuals, set by connecting the Blob store. Without it, uploads go through the server, which is fine locally but fails on Vercel. |
+| `ANTHROPIC_API_KEY` | For AI features | Server-side only. Without it, everything except AI analysis works and the app shows setup instructions. |
+| `APP_PASSCODE` | Recommended | Passcode screen for every page and API call. |
 | `ANTHROPIC_MODEL` | No | Defaults to `claude-opus-5-5`. |
-| `APP_PASSCODE` | Recommended when reachable by others | Shows a passcode screen for every page and API. Uses an HTTP-only, SameSite=strict cookie that lasts 30 days. |
-| `SESSION_SECRET` | No | Signs the session cookie. By default it is derived from `APP_PASSCODE`. |
-| `DATA_DIR` | No | Where the SQLite database and uploaded PDFs are stored. Default `./data`. It is gitignored and never served publicly. |
+| `DATA_DIR` | No | Local-only file storage when there is no Blob token. Default `./.data`. |
+
+Local development: `DATABASE_URL=pglite://memory npm run dev` runs real Postgres in-process (data is lost on restart), or point it at a Neon dev branch.
 
 ### Tests
 
 ```bash
-npm test          # 23 tests: rules, renderers, corrections, isolation, PDF pipeline (model calls are faked)
+npm test          # 31 tests on in-process Postgres (PGlite): rules, renderers, corrections, isolation,
+                  # PDF pipeline, notes persistence through the real routes, Blob upload guards.
+                  # Tests never use DATABASE_URL from your environment, so they cannot touch the hosted DB.
 npm run typecheck
 ```
 
@@ -87,7 +89,7 @@ Source references appear only in the evidence panel (tap a bullet), not in the c
 
 **Corrections** (`src/lib/patch.ts`). Your correction is turned into targeted operations: update, add or remove an item, update equipment, move a room's entries ("that's the closet, not the bedroom"), rename a room, set job info or a directive, answer a question, or set a visit field. Operations only touch what they name, so other rooms can't be dropped. A room name that matches more than one room (two units with a "Closet") stops the correction and asks "Which closet? …".
 
-**Storage and exports.** SQLite (`better-sqlite3`) stores projects, source PDFs (on disk under `DATA_DIR`), page text, evidence, the room hierarchy, visits with their facts, and every draft version. Each version records what triggered it, your correction text and the change summary, and any version can be restored. Exports: Copy for Slack (mrkdwn), plain text, PDF (`pdf-lib`) and DOCX (`docx`).
+**Storage and exports.** Postgres (Neon) stores projects, page text, evidence, the room hierarchy, visits with their facts, and every draft version. Source PDFs live in the private Blob store. Each version records what triggered it, your correction text and the change summary, and any version can be restored. Exports: Copy for Slack (mrkdwn), plain text, PDF (`pdf-lib`) and DOCX (`docx`).
 
 **Isolation and security**
 - Every query is scoped by project id, and AI context is built only from that project. A test checks that another project's notes, rooms and evidence ids never reach a prompt or a scope.
