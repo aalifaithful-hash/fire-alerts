@@ -5,6 +5,6 @@ import { visitPayload } from "@/lib/payload";
 type P = { pid: string; vid: string };
 export const POST = route<P>(async (req, { pid, vid }) => {
   const b = await body<{ locationId: string | null; category: string; text: string; status: string }>(req);
-  addItem(pid, vid, b);
+  await addItem(pid, vid, b);
   return visitPayload(pid, vid);
 });
