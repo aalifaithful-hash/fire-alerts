@@ -6,3 +6,6 @@ data/
 public/pdf.worker.min.mjs
 next-env.d.ts
 *.tsbuildinfo
+
+# Deleted upstream on purpose (3cf0d3e); Vercel resolves from package.json.
+package-lock.json
