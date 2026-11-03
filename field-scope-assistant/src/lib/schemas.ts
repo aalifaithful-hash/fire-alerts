@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { Exclusion } from "./scan";
 
 /**
  * Core domain model. "Facts" are the structured, validated source of truth for a
@@ -211,6 +212,10 @@ export const VisitFacts = z.object({
     .nullable()
     .default(null),
   reviewFlags: z.array(z.string()).default([]),
+  /** Customer-preference / scope exclusions — recorded explicitly, never silent. */
+  exclusions: z.array(Exclusion).default([]),
+  /** Reconstruction estimate is written only when this is on. */
+  reconstructionRequested: z.boolean().default(false),
 });
 export type VisitFacts = z.infer<typeof VisitFacts>;
 

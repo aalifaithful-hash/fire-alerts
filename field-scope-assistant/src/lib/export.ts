@@ -1,4 +1,13 @@
 import type { ScopeDoc } from "./schemas";
+import { toPng, toSvg, type SketchModel } from "./sketch";
+
+/** Printed after the scope: estimator line items, then the sketch of affected areas. */
+export interface ExportAppendix {
+  columns: string[];
+  rows: { room: string; activity: string; item: string; quantity: string; unit: string; rate: string; total: string; notes: string }[];
+  sketch: SketchModel;
+  equipmentNote: string | null;
+}
 
 type Line = { kind: "title" | "h1" | "h2" | "meta" | "bullet" | "text" | "gap"; text: string; label?: string };
 
@@ -33,7 +42,7 @@ export function textLines(text: string): Line[] {
   return out;
 }
 
-export async function toPdf(lines: Line[]): Promise<Uint8Array> {
+export async function toPdf(lines: Line[], appendix: ExportAppendix | null = null): Promise<Uint8Array> {
   const { PDFDocument, StandardFonts, rgb } = await import("pdf-lib");
   const pdf = await PDFDocument.create();
   const regular = await pdf.embedFont(StandardFonts.Helvetica);
@@ -111,11 +120,61 @@ export async function toPdf(lines: Line[]): Promise<Uint8Array> {
         break;
     }
   }
+  if (appendix) {
+    // ---- estimator line items ----
+    page = pdf.addPage([W, H]);
+    y = H - M;
+    draw("ESTIMATOR LINE ITEMS", bold, 13, M, W - 2 * M);
+    draw(appendix.columns.join(" | "), regular, 8.5, M, W - 2 * M, rgb(0.35, 0.37, 0.4));
+    y -= 4;
+    if (!appendix.rows.length) draw("No accepted line items yet.", regular, 10, M, W - 2 * M);
+    let lastRoom = "";
+    for (const r of appendix.rows) {
+      if (r.room !== lastRoom) {
+        y -= 4;
+        draw(r.room, bold, 10.5, M, W - 2 * M);
+        lastRoom = r.room;
+      }
+      const money = [r.rate, r.total].filter(Boolean).join(" / ");
+      draw(`${r.activity} ${r.item} — ${r.quantity} ${r.unit}${money ? ` — ${money}` : ""}`, regular, 10, M + 10, W - 2 * M - 10);
+      draw(r.notes, regular, 8.5, M + 22, W - 2 * M - 22, rgb(0.3, 0.32, 0.36));
+    }
+    if (appendix.equipmentNote) {
+      y -= 6;
+      draw(appendix.equipmentNote, regular, 9, M, W - 2 * M, rgb(0.3, 0.32, 0.36));
+    }
+    // ---- sketch ----
+    page = pdf.addPage([W, H]);
+    y = H - M;
+    draw("SKETCH OF AFFECTED AREAS", bold, 13, M, W - 2 * M);
+    const sk = appendix.sketch;
+    const scale = Math.min((W - 2 * M) / sk.width, (y - M) / sk.height);
+    const ox = M;
+    const oy = y - 6; // top of drawing in PDF coordinates
+    const P = (px: number, py: number) => ({ x: ox + px * scale, y: oy - py * scale });
+    const col = (h: string) => rgb(parseInt(h.slice(1, 3), 16) / 255, parseInt(h.slice(3, 5), 16) / 255, parseInt(h.slice(5, 7), 16) / 255);
+    for (const pr of sk.prims) {
+      if (pr.t === "line")
+        page.drawLine({ start: P(pr.x1, pr.y1), end: P(pr.x2, pr.y2), thickness: Math.max(0.4, pr.sw * scale), color: col(pr.stroke), dashArray: pr.dash?.map((d) => d * scale) });
+      else if (pr.t === "rect") {
+        const tl = P(pr.x, pr.y + pr.h);
+        page.drawRectangle({ x: tl.x, y: tl.y, width: pr.w * scale, height: pr.h * scale, borderColor: col(pr.stroke), borderWidth: Math.max(0.4, pr.sw * scale), borderDashArray: pr.dash?.map((d) => d * scale), color: pr.fill ? col(pr.fill) : undefined, opacity: pr.fill ? (pr.opacity ?? 1) : undefined });
+      } else if (pr.t === "circle") page.drawCircle({ ...P(pr.cx, pr.cy), size: pr.r * scale, color: col(pr.fill) });
+      else if (pr.t === "text") {
+        const f = pr.bold ? bold : regular;
+        const size = Math.max(4, pr.size * scale);
+        const txt = safe(f, pr.text.replace(/[′]/g, "'").replace(/[″]/g, '"'));
+        const tw = f.widthOfTextAtSize(txt, size);
+        const at = P(pr.x, pr.y);
+        page.drawText(txt, { x: pr.anchor === "middle" ? at.x - tw / 2 : pr.anchor === "end" ? at.x - tw : at.x, y: at.y, size, font: f, color: col(pr.fill) });
+      }
+    }
+  }
   return pdf.save();
 }
 
-export async function toDocx(lines: Line[]): Promise<Buffer> {
-  const { Document, Packer, Paragraph, TextRun, HeadingLevel } = await import("docx");
+export async function toDocx(lines: Line[], appendix: ExportAppendix | null = null): Promise<Buffer> {
+  const { Document, Packer, Paragraph, TextRun, HeadingLevel, Table, TableRow, TableCell, WidthType, ImageRun, PageBreak } = await import("docx");
   const children = lines
     .filter((l) => l.kind !== "gap")
     .map((l) => {
@@ -134,6 +193,33 @@ export async function toDocx(lines: Line[]): Promise<Buffer> {
           return new Paragraph({ children: [new TextRun(l.text)] });
       }
     });
-  const doc = new Document({ sections: [{ children }] });
+  const extra: (InstanceType<typeof Paragraph> | InstanceType<typeof Table>)[] = [];
+  if (appendix) {
+    extra.push(new Paragraph({ children: [new PageBreak()] }));
+    extra.push(new Paragraph({ heading: HeadingLevel.HEADING_1, children: [new TextRun("Estimator line items")] }));
+    const cell = (t: string, b = false) => new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: t, bold: b, size: 18 })] })] });
+    const header = new TableRow({ tableHeader: true, children: ["Room", ...appendix.columns].map((c) => cell(c, true)) });
+    const body = appendix.rows.map((r) => new TableRow({ children: [r.room, r.activity, r.item, r.quantity, r.unit, r.rate, r.total, r.notes].map((v) => cell(v)) }));
+    extra.push(appendix.rows.length ? new Table({ rows: [header, ...body], width: { size: 100, type: WidthType.PERCENTAGE } }) : new Paragraph({ children: [new TextRun("No accepted line items yet.")] }));
+    if (appendix.equipmentNote) extra.push(new Paragraph({ children: [new TextRun({ text: appendix.equipmentNote, size: 18 })] }));
+    extra.push(new Paragraph({ children: [new PageBreak()] }));
+    extra.push(new Paragraph({ heading: HeadingLevel.HEADING_1, children: [new TextRun("Sketch of affected areas")] }));
+    const sk = appendix.sketch;
+    const wpx = 620;
+    const hpx = Math.round((sk.height / sk.width) * wpx);
+    extra.push(
+      new Paragraph({
+        children: [
+          new ImageRun({
+            type: "svg",
+            data: Buffer.from(toSvg(sk)),
+            transformation: { width: wpx, height: hpx },
+            fallback: { type: "png", data: toPng(sk) },
+          }),
+        ],
+      }),
+    );
+  }
+  const doc = new Document({ sections: [{ children: [...children, ...extra] }] });
   return Packer.toBuffer(doc);
 }

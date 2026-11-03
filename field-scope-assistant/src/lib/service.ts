@@ -452,6 +452,8 @@ export async function analysisToFacts(projectId: string, ctx: Pick<VisitContext,
     recommendations,
     checklist: existing.checklist,
     reviewFlags: [],
+    exclusions: existing.exclusions, // PM decisions survive an AI regenerate
+    reconstructionRequested: existing.reconstructionRequested,
   };
 }
 

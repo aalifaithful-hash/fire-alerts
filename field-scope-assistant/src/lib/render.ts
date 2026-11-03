@@ -88,7 +88,38 @@ function byOrder(order: Category[]) {
 }
 
 function scopeItems(f: VisitFacts): ScopeItem[] {
-  return f.items.filter((i) => isConfirmedForScope(i, f));
+  const ex = f.exclusions ?? [];
+  const contentsOut = ex.some((e) => e.target === "contents_all" || (e.target === "service_line" && e.serviceLine === "contents"));
+  const roomsOut = new Set(ex.filter((e) => e.target === "room" && e.locationId).map((e) => e.locationId));
+  return f.items.filter(
+    (i) =>
+      isConfirmedForScope(i, f) &&
+      // excluded work never prints as scope; the Exclusions section says why
+      !(contentsOut && i.category === "contents" && !/access the structure/i.test(i.text)) &&
+      !(i.locationId && roomsOut.has(i.locationId)),
+  );
+}
+
+/** Explicit exclusions section — customer preferences are never applied silently. */
+function exclusionSection(f: VisitFacts, locations: Location[]): ScopeSection[] {
+  const ex = f.exclusions ?? [];
+  if (!ex.length) return [];
+  const SIG: Record<string, string> = {
+    signed: "signed declination on file",
+    verbal: "verbal only — signature required",
+    not_documented: "not documented — signature required",
+  };
+  return [
+    {
+      level: 2,
+      heading: "Exclusions",
+      bullets: ex.map((e) => {
+        const room = e.locationId ? locations.find((l) => l.id === e.locationId) : null;
+        const base = e.text || `${e.target.replace(/_/g, " ")} excluded${room ? ` (${fullLabel(room)})` : ""}: ${e.reason}`;
+        return { text: `${base.replace(/\.$/, "")}. Customer decision: ${SIG[e.signature] ?? e.signature}.` };
+      }),
+    },
+  ];
 }
 function scopeEquipment(f: VisitFacts): Equipment[] {
   return f.equipment.filter((e) => isConfirmedForScope(e, f));
@@ -436,6 +467,12 @@ function renderChecklist(input: RenderInput, baseType: VisitType): ScopeDoc {
 }
 
 export function renderDoc(input: RenderInput, checklistFor?: VisitType): ScopeDoc {
+  const doc = renderDocInner(input, checklistFor);
+  const ex = exclusionSection(input.facts, input.locations);
+  return ex.length ? { ...doc, sections: [...doc.sections, ...ex] } : doc;
+}
+
+function renderDocInner(input: RenderInput, checklistFor?: VisitType): ScopeDoc {
   switch (input.visit.type) {
     case "initial_assessment":
       return renderAssessment(input);
