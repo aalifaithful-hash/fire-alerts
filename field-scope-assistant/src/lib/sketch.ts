@@ -88,9 +88,9 @@ export function buildSketch(rooms: SketchRoom[]): SketchModel {
     return { r, measured, L: measured ? m.lengthFt! : UNMEASURED.L, Wd: measured ? m.widthFt! : UNMEASURED.W };
   });
   const maxL = Math.max(1, ...dims.map((d) => d.L));
-  const S = Math.min(16, (W - 2 * MARGIN) / maxL); // units per foot
+  const S = Math.min(40, (W - 2 * MARGIN) / maxL); // units per foot (common scale for every room)
   let y = MARGIN + 16;
-  prims.push({ t: "text", x: W - MARGIN, y: MARGIN + 4, text: "N ↑", size: 14, fill: COLORS.text, anchor: "end", bold: true });
+  let maxX = 0;
 
   const floors = [...new Set(dims.map((d) => d.r.floor ?? ""))];
   for (const fl of floors) {
@@ -108,12 +108,16 @@ export function buildSketch(rooms: SketchRoom[]): SketchModel {
         rowH = 0;
       }
       drawRoom(prims, d.r, x, y, w, h, d.measured, d.L, d.Wd, S);
+      maxX = Math.max(maxX, x + w + 150); // room for labels outside the right wall
       x += w + GAP;
       rowH = Math.max(rowH, h + 26);
     }
     y += rowH + GAP;
   }
 
+  // crop the canvas to the drawing (keeps one small room large on a phone)
+  const width = Math.min(W, Math.max(600, maxX + MARGIN));
+  prims.push({ t: "text", x: width - MARGIN, y: MARGIN + 4, text: "N ↑", size: 14, fill: COLORS.text, anchor: "end", bold: true });
   // legend
   const ly = y;
   const items: [string, Prim][] = [
@@ -125,14 +129,14 @@ export function buildSketch(rooms: SketchRoom[]): SketchModel {
     ["Not measured (not to scale)", { t: "line", x1: 0, y1: 0, x2: 24, y2: 0, stroke: COLORS.outline, sw: 1.5, dash: [5, 4] }],
   ];
   items.forEach(([label, p], i) => {
-    const cx = MARGIN + (i % 2) * 470;
+    const cx = MARGIN + (i % 2) * ((width - 2 * MARGIN) / 2);
     const cy = ly + Math.floor(i / 2) * 22;
     prims.push(shift(p, cx, cy));
     prims.push({ t: "text", x: cx + 34, y: cy + 4, text: label, size: 12, fill: COLORS.text });
   });
   const height = ly + Math.ceil(items.length / 2) * 22 + 20;
   prims.push({ t: "text", x: MARGIN, y: height - 6, text: "Drawn from manual measurements; rooms are placed side by side, not in their real position.", size: 10, fill: COLORS.muted });
-  return { width: W, height: height + 8, prims, rooms: rooms.length };
+  return { width, height: height + 8, prims, rooms: rooms.length };
 }
 
 function shift(p: Prim, dx: number, dy: number): Prim {
@@ -169,7 +173,7 @@ function drawRoom(P: Prim[], room: SketchRoom, x: number, y: number, w: number, 
     const fromRight = scan.source.wall === "E";
     const replace = !!live(lines, "floor.replace");
     P.push(...hatch(fromRight ? x + w - fw : x, y, fw, h, replace ? COLORS.reconstruction : COLORS.mitigation, 10));
-    P.push({ t: "text", x: x + 6, y: y + h - 8, text: `Floor ${Math.round(pct * 100)}%${m.flooring.type ? ` ${m.flooring.type}` : ""}${replace ? " — replace" : ""}`, size: 10, fill: COLORS.text });
+    P.push({ t: "text", x: x + 8, y: y + 18, text: `Floor ${Math.round(pct * 100)}%${m.flooring.type ? ` ${m.flooring.type}` : ""}${replace ? " — replace" : ""}`, size: 10, fill: COLORS.text });
   }
   if (m.flooring.continuousRun)
     P.push({ t: "text", x: x + w - 6, y: y + h - 8, text: `Run ${m.flooring.continuousRun}`, size: 10, fill: COLORS.reconstruction, anchor: "end", bold: true });
@@ -187,7 +191,8 @@ function drawRoom(P: Prim[], room: SketchRoom, x: number, y: number, w: number, 
     if (fc && m.walls.affectedWalls.includes(wl)) {
       const e = edge(wl, x, y, w, h, 3)!;
       P.push({ t: "line", x1: e.x1, y1: e.y1, x2: e.x2, y2: e.y2, stroke: COLORS.mitigation, sw: 6 });
-      const mid = along(e, 0.5);
+      // label at a quarter of the wall so it does not sit on the source marker or the door
+      const mid = along(e, 0.25);
       P.push({ t: "text", x: mid.x + (e.horiz ? 0 : wl === "E" ? -8 : 8), y: mid.y + (e.horiz ? (wl === "N" ? 18 : -10) : 4), text: `FC ${cutIn}″`, size: 10, fill: COLORS.mitigation, anchor: e.horiz ? "middle" : wl === "E" ? "end" : "start", bold: true });
     } else if (live(lines, "baseboard") && (m.baseboard.walls.length ? m.baseboard.walls : m.walls.affectedWalls).includes(wl)) {
       const e = edge(wl, x, y, w, h, 4)!;
@@ -252,7 +257,7 @@ function drawRoom(P: Prim[], room: SketchRoom, x: number, y: number, w: number, 
   const placed = scan.equipmentPlaced.map((e) => `${e.kind === "air_mover" ? "AM" : e.kind === "dehumidifier" ? "DH" : "AS"}×${e.qty}`);
   const calc = lines.filter((l) => l.kind === "equipment" && l.status === "accepted").map((l) => `${l.item.includes("scrubber") ? "AS" : "AM"}×${l.quantity} calc`);
   const eq = placed.length ? placed : calc;
-  if (eq.length) P.push({ t: "text", x: x + w - 6, y: y + 16, text: eq.join("  "), size: 10, fill: COLORS.text, anchor: "end", bold: true });
+  if (eq.length) P.push({ t: "text", x: x + w - 12, y: y + 32, text: eq.join("  "), size: 10, fill: COLORS.text, anchor: "end", bold: true });
 }
 
 const round = (v: number) => Math.round(v * 10) / 10;

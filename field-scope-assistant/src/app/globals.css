@@ -145,3 +145,6 @@ canvas.pdfpage { width: 100%; height: auto; border-radius: 6px; border: 1px soli
 .mic.live { background: var(--fire); border-color: var(--fire); color: #fff; animation: pulse 1.4s infinite; }
 @keyframes pulse { 50% { opacity: .7; } }
 details > summary { cursor: pointer; font-weight: 600; min-height: 36px; display: flex; align-items: center; }
+
+/* Sketch scales to the screen; the full drawing stays readable on a phone */
+[data-testid="sketch"] svg { width: 100%; height: auto; display: block; }

@@ -55,6 +55,25 @@ npm test          # 35 tests on in-process Postgres (PGlite): rules, renderers, 
 npm run typecheck
 ```
 
+## FNOL intake and the room-by-room scan (no AI)
+
+- **Inbox** (`/inbox`): paste an FNOL and tap Parse. The rules-based parser reads:
+  - the kind of work: EMS, mitigation, reconstruction, contents, or contents only;
+  - the kind of visit: initial or final walk-through, monitoring or kickoff;
+  - special assignment and reason, program, claim and job numbers, carrier, insured, phone, address and unit, loss date and type, and cause.
+
+  Review and edit, then save. The FNOL becomes an **assignment** on a **property**; one property keeps many assignments with full history. "Open project & start visit" creates the visit with the matching output format.
+- **Scan tab** (in a project), one room at a time:
+  1. Cause and location in the room.
+  2. Affected materials and contents.
+  3. Manual measurements.
+  4. Proposed line items, with quantity math and justification, to accept or reject.
+
+  Supporting features: exclusions, calculated equipment, pre-send checks, and a sketch printed after the scope in the PDF and DOCX.
+- **Settings → Rules & defaults**: every professional default (`src/lib/defaults.ts`) is editable. See `docs/PLAN-fnol-to-scope.md` → "Defaults chosen".
+
+Checks: `npm run typecheck`, `npm run lint`, `npm test` (PGlite; never touches the hosted database), `npm run build`.
+
 ## What's implemented
 
 **Screens.** All screens are phone-sized, with large controls and a light variant for sunlight.

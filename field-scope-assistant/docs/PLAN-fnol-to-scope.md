@@ -1,8 +1,68 @@
 # Plan: Slack FNOL intake → senior-PM scope
 
-Status: **proposal, not started.** Nothing in this plan adds Slack tokens, AI keys, payment, or Vercel settings. Every phase keeps the current no-AI behavior working.
+Status: **phases a1–a3, a7, the data-model split and the room workflow (c, d1, d4, e1–e2) are built**; the rest is planned. Nothing in this plan adds Slack tokens, AI keys, payment, or Vercel settings. Every phase keeps the current no-AI behavior working.
 
 Revision 2 (Nov 3): adds a professional critique, sketch output, the room-by-room scan workflow, and customer-preference exclusions.
+Revision 3 (Nov 3): owner decision to proceed with professional defaults. See "Build status" and "Defaults chosen" below.
+
+## Build status (Nov 3, revision 3)
+
+The owner decided: no more questions; build with the best professional defaults. Every default is listed below and can be changed in the app under **Settings → Rules & defaults**. That page is backed by one file, `src/lib/defaults.ts`, and no default is hard-coded anywhere else.
+
+**Built** (rules only, no AI; no Slack token, AI key, passcode, payment or Vercel setting changes):
+
+| Piece | Where |
+|---|---|
+| a1–a3 Paste-in FNOL inbox, rules-based parser, review and edit before saving | `/inbox`, `src/lib/fnol.ts`, `src/lib/intake.ts` |
+| Properties with multiple assignments and full history, same-claim linking, property page (year built, multi-unit and adjacent-unit checks) | `/properties/:id` |
+| a7 Program deadline timers from FNOL receipt | `deadlinesFor()` and the review screen |
+| Data model: kind of work (service line) separate from kind of visit (stage); assignment → project → visit with the right output format | `visits.stage`, `visits.service_line` |
+| e1–e2 Room-by-room scan: cause and location, affected materials and contents, manual measurements, proposed lines with math and justification, accept or reject, questions | project → **Scan** tab |
+| c1 What-goes-with-it, c2b equipment math, c3 cleaning methods, c4/c7 estimator line items, c5 reconstruction only when requested, c8 hazard flags, c9 exclusions, c11 pre-send checks | `src/lib/roomRules.ts`, `src/lib/scans.ts` |
+| d1 manual measurements and d4 sketch, printed after the scope in PDF and DOCX | `src/lib/takeoff.ts`, `src/lib/sketch.ts`, `src/lib/export.ts` |
+| b5 (partial) moisture points with readings and dry goals per room | Scan tab, step 5 |
+| h2 (cheap version) PM / estimator / crew views of the accepted lines | Scan tab → Views |
+
+**Still planned:**
+- a4–a5 Slack connection (needs a token added by the user).
+- a6, c6, e3, f3 AI pieces (AI is off by owner decision).
+- b2 a "Today" list across all projects.
+- b5 daily readings trended across visits.
+- c2 crew calculator (needs production rates; crew counts stay PM-entered, e.g. "CC+4").
+- c10 supplements.
+- d2–d3 scan-app import and a native LiDAR app.
+- f1–f2 checklist by program.
+- h1 offline capture.
+- h2 real per-user roles.
+
+## Defaults chosen
+
+All values are in `src/lib/defaults.ts` and editable under Settings → Rules & defaults (one section per row group). They are starting points for the PM to confirm. Nothing is ever accepted automatically.
+
+| # | Section | Default | Notes |
+|---|---|---|---|
+| 1 | Cleaning methods | **Cat 1:** extract, dry structure in place, clean affected hard surfaces | Basis: S500 practice |
+| 1 | | **Cat 2 (gray):** extract, remove porous materials in contact (e.g. carpet pad), antimicrobial, clean the remainder | |
+| 1 | | **Cat 3 (black):** extract, remove porous materials in contact (carpet, pad, drywall, insulation), flood cut, antimicrobial, evaluate contents for disposal with customer sign-off | |
+| 1 | | **Dry smoke:** HEPA vacuum + dry chemical sponge. **Wet smoke:** degreaser wet-clean. **Protein smoke:** degreaser + odor control | Chosen per room by smoke type |
+| 1 | | **Heavy char/soot on non-porous:** clean. **Porous with heavy deposits:** seal (stain-blocking primer) or remove. **Odor:** HEPA air scrubber + deodorization as needed | |
+| 2 | What goes with it | **Baseboard removed:** replace baseboard, paint baseboard, seal/prime and paint the **full continuous wall to the natural break** | Corner to corner, openings deducted |
+| 2 | | **Flooring replaced:** the **full continuous run to the natural break** (rooms that share a run name), reinstall base and transitions at each opening, detach and reset floor fixtures (toilet, vanity, appliances) | An unaffected room in the run is included, with the reason stated |
+| 2 | | **Drywall flood cut:** remove insulation to the cut line; replace drywall (hang, tape, finish); seal/prime and paint to the natural break | |
+| 2 | | **Cabinets:** remove the toe kick for drying access, or detach; reset and reattach when detached or when the flooring under them is replaced; reconnect countertop, plumbing and appliances | |
+| 2 | | **Ceiling stain:** seal (stain-blocking) and paint the full ceiling | |
+| 3 | Equipment ratios | 1 air mover per **50–70 SF** of wet floor (range shown, midpoint suggested) | Shown as "calculated, not installed". The installed count is only what the PM records |
+| 3 | | 1 LGR dehumidifier (~70–130 pints/day AHAM) per **1,000–1,500 SF** of affected space / drying chamber | Visit-level summary |
+| 3 | | **1 HEPA air scrubber** per affected area for fire, smoke, odor or Category 3 | |
+| 4 | Flood cut | **24" above the highest wet line / wicking**; **12"** margin for Cat 1 with low wicking (≤ 6" wet); rounded up to sheet-efficient stops **12 / 24 / 48 / 96"** (so damage above 24" goes to 48", more goes to 96"); insulation removed to the cut line | Auto only for Cat 2/3 drywall. Cat 1 dries in place unless the PM sets a height. Plaster is never auto-cut (the app asks) |
+| 5 | Line-item format | Xactimate-style **Activity \| Item \| Quantity \| Unit \| Rate \| Total \| Notes/Justification**; each line carries room, calculation, justification and evidence (moisture points) | Rates and totals stay blank until pricing is configured. Optional house category codes |
+| 6 | Exclusions | A customer decline is recorded explicitly: target (contents cleaning / pack-out / all contents / room / service line), reason, who decided, date, signature status. The scope prints an **Exclusions** section ("Contents cleaning and pack-out excluded at the customer's request (date, decided by…). This scope covers the structure only…"), and "signature required" until signed | Never silently dropped. Excluded lines stay visible as "excluded". Moving contents to access the structure is kept |
+| 7 | Category-change flag | Asks hours since loss and water source. Flags possible Cat 1 → 2 after **48 h** and → 3 after **72 h**. Sewage, toilet with feces, flood and groundwater are normally **Cat 3**. Toilet overflow, dishwasher, washing machine and sump pump are at least **Cat 2** | The flag never changes the category; the PM confirms it |
+| 8 | Program deadlines | "Default program": customer contact **1 h**, on site **4 h**, estimate upload **24 h** from FNOL receipt (the "Received:" time in the FNOL, else the time it was saved) | Add programs with names and keywords |
+| — | Hazards | Lead-safe (RRP) flag for buildings **before 1978**. Asbestos survey/clearance note on every demolition line (NYC requires an investigation before most demolition). Unknown year built raises a question | Demolition lines carry "pending hazard clearance" |
+| — | FNOL keywords | The words that identify EMS, mitigation, reconstruction, contents, contents-only, special assignment, and initial / final / monitoring / kickoff | Edit to match your dispatch wording |
+| — | Reconstruction | Not estimated unless "Reconstruction estimate requested" is switched on for the visit. Otherwise listed as "Pending reconstruction (separate assignment, not estimated)" | Per the requirement |
+| — | Initial stage | An FNOL with no stage words is assumed to be an **initial walk-through**, and the review screen shows "assumed — confirm" | |
 
 ## The requirement, as given
 
@@ -220,7 +280,7 @@ The scope is always editable, whether or not there are open questions. Modificat
 
 a1–a3 (paste-in FNOL), then the data-model corrections, then e1–e2 with d1 (the room workflow with manual measurements; this is where most scope value comes from), then c1, c4, c7, c9 (rules, estimator lines, exclusions), then d4 (sketch), then b1–b5, then c2, c2b, c3, c8, c10, c11, then a4–a7 (once Slack is connected), then f2, then h1–h2. AI pieces (a6, c6, e3, f3) and d2–d3 wait on decisions.
 
-## What I need from the user before starting
+## Inputs that would refine the defaults (optional — the app works without them)
 
 **From the Servpro claude.ai projects (for a direct review)**
 1. Each project's instructions text and knowledge files: SOPs, scope templates, line-item and category-code conventions, program or carrier guidelines, sample scopes and estimates, checklists.
