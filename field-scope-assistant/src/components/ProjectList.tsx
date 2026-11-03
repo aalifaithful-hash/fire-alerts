@@ -44,9 +44,14 @@ export default function ProjectList() {
           <input className="in grow" type="search" placeholder="Search address, customer, claim #…" value={q} onChange={(e) => setQ(e.target.value)} aria-label="Search projects" />
         </div>
         {!creating ? (
-          <button className="btn primary big" onClick={() => setCreating(true)}>
-            + New project
-          </button>
+          <div className="stack">
+            <a className="btn primary big" href="/inbox">
+              Paste an FNOL (new assignment)
+            </a>
+            <button className="btn big" onClick={() => setCreating(true)}>
+              + New project without an FNOL
+            </button>
+          </div>
         ) : (
           <div className="card stack">
             <h3 style={{ marginTop: 0 }}>New project</h3>

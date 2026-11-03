@@ -7,7 +7,18 @@ export interface WorkspaceData {
   locations: Location[];
   documents: (Document & { progress: { total: number; done: number; failed: number; pending: number; errors: string[] }; textPages: number; extractedPages: number })[];
   evidence: Evidence[];
-  visits: { id: string; type: VisitType; visitDate: string; appointmentTime: string | null; accessOutcome: string | null; hasDraft: boolean; updatedAt: string }[];
+  visits: {
+    id: string;
+    type: VisitType;
+    visitDate: string;
+    appointmentTime: string | null;
+    accessOutcome: string | null;
+    hasDraft: boolean;
+    updatedAt: string;
+    stage: import("@/lib/fnol").VisitStage | null;
+    serviceLine: import("@/lib/fnol").ServiceLine | null;
+  }[];
+  assignments: import("@/lib/intake").Assignment[];
   templates: ChecklistTemplate[];
 }
 

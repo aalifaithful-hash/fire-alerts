@@ -1,4 +1,5 @@
 import * as repo from "./repo";
+import { assignmentsForProject } from "./intake";
 import { checklistDoc } from "./service";
 import { docToSlack, docToText } from "./render";
 
@@ -18,6 +19,7 @@ export async function workspacePayload(projectId: string) {
   const evidence = await repo.listEvidence(projectId);
   const visits = await repo.listVisits(projectId);
   const templates = await repo.listTemplates();
+  const assignments = (await assignmentsForProject(projectId)).map((a) => ({ ...a, rawText: undefined }));
   return {
     project,
     locations,
@@ -30,8 +32,11 @@ export async function workspacePayload(projectId: string) {
       appointmentTime: v.appointmentTime,
       accessOutcome: v.accessOutcome,
       hasDraft: !!v.doc,
+      stage: v.stage,
+      serviceLine: v.serviceLine,
       updatedAt: v.updatedAt,
     })),
     templates,
+    assignments,
   };
 }

@@ -3,6 +3,7 @@ import * as repo from "@/lib/repo";
 import { visitPayload } from "@/lib/payload";
 import { rerender } from "@/lib/service";
 import { VISIT_TYPES, type VisitType } from "@/lib/schemas";
+import { SERVICE_LINES, VISIT_STAGES } from "@/lib/fnol";
 
 type P = { pid: string; vid: string };
 export const GET = route<P>(async (_req, { pid, vid }) => await visitPayload(pid, vid));
@@ -11,6 +12,8 @@ export const PATCH = route<P>(async (req, { pid, vid }) => {
   const patch: Record<string, string | null> = {};
   for (const k of Object.keys(repo.VISIT_EDITABLE)) if (k in b) patch[k] = b[k];
   if (patch.type && !VISIT_TYPES.includes(patch.type as VisitType)) delete patch.type;
+  if (patch.stage && !(VISIT_STAGES as readonly string[]).includes(patch.stage)) delete patch.stage;
+  if (patch.serviceLine && !(SERVICE_LINES as readonly string[]).includes(patch.serviceLine)) delete patch.serviceLine;
   const before = await repo.getVisit(pid, vid);
   await repo.updateVisitFields(pid, vid, patch);
   // Header fields and type affect the rendered document

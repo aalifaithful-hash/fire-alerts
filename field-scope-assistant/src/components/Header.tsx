@@ -9,6 +9,9 @@ export default function Header({ crumb, right }: { crumb?: string; right?: React
       </Link>
       <div className="grow crumb">{crumb ?? "Field Scope Assistant"}</div>
       {right}
+      <Link href="/inbox" className="btn ghost sm" aria-label="FNOL inbox">
+        Inbox
+      </Link>
       <Link href="/settings" className="btn ghost sm" aria-label="Settings">
         ⚙
       </Link>

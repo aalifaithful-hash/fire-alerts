@@ -17,6 +17,7 @@ import {
   type VisitType,
 } from "@/lib/schemas";
 import { formatDate, formatTimestampNY, todayNY } from "@/lib/time";
+import { outputTypeFor, SERVICE_LINES, SERVICE_LINE_LABELS, VISIT_STAGES, VISIT_STAGE_LABELS, type ServiceLine, type VisitStage } from "@/lib/fnol";
 
 interface Props {
   ws: WorkspaceData;
@@ -176,8 +177,32 @@ export default function ScopeTab(p: Props) {
           {v.accessOutcome ? ` · ${v.accessOutcome}` : ""}
         </summary>
         <div className="stack" style={{ marginTop: 10 }}>
+          <div className="grid2">
+            <label className="field">
+              <span>Kind of work</span>
+              <select className="in" value={v.serviceLine ?? ""} onChange={(e) => patchVisit({ serviceLine: e.target.value || null })}>
+                <option value="">Not set</option>
+                {SERVICE_LINES.map((l) => (
+                  <option key={l} value={l}>
+                    {SERVICE_LINE_LABELS[l]}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="field">
+              <span>Kind of visit</span>
+              <select className="in" value={v.stage ?? ""} onChange={(e) => patchVisit({ stage: e.target.value || null })}>
+                <option value="">Not set</option>
+                {VISIT_STAGES.map((st) => (
+                  <option key={st} value={st}>
+                    {VISIT_STAGE_LABELS[st]}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
           <label className="field">
-            <span>Output type</span>
+            <span>Output format</span>
             <select className="in" value={v.type} onChange={(e) => patchVisit({ type: e.target.value })}>
               {VISIT_TYPES.map((t) => (
                 <option key={t} value={t}>
@@ -876,12 +901,43 @@ function ChecklistBlock(p: {
 
 function NewVisitForm({ ws, projectId, onCreated, onCancel }: { ws: WorkspaceData; projectId: string; onCreated: (id: string) => void; onCancel?: () => void }) {
   const [type, setType] = useState<VisitType>(ws.visits.length ? "daily_monitoring" : "initial_assessment");
+  const [stage, setStage] = useState<VisitStage>(ws.visits.length ? "daily_monitoring" : "initial_walkthrough");
+  const [line, setLine] = useState<ServiceLine | "">("");
   const [date, setDate] = useState(todayNY());
   const [appt, setAppt] = useState("");
   const [err, setErr] = useState("");
+  const pick = (nextStage: VisitStage, nextLine: ServiceLine | "") => {
+    setStage(nextStage);
+    setLine(nextLine);
+    setType(outputTypeFor(nextLine ? [nextLine] : [], nextStage, nextLine === "contents"));
+  };
   return (
     <div className="card stack">
       <h3 style={{ marginTop: 0 }}>New visit</h3>
+      <div className="grid2">
+        <label className="field">
+          <span>Kind of work</span>
+          <select className="in" value={line} onChange={(e) => pick(stage, e.target.value as ServiceLine | "")} aria-label="Kind of work">
+            <option value="">Not set</option>
+            {SERVICE_LINES.map((l) => (
+              <option key={l} value={l}>
+                {SERVICE_LINE_LABELS[l]}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="field">
+          <span>Kind of visit</span>
+          <select className="in" value={stage} onChange={(e) => pick(e.target.value as VisitStage, line)} aria-label="Kind of visit">
+            {VISIT_STAGES.map((st) => (
+              <option key={st} value={st}>
+                {VISIT_STAGE_LABELS[st]}
+              </option>
+            ))}
+          </select>
+        </label>
+      </div>
+      <div className="small muted">Output format (chosen from the two above; you can override):</div>
       <div className="stack">
         {VISIT_TYPES.map((t) => (
           <button key={t} className={`btn ${type === t ? "on" : ""}`} style={{ width: "100%", justifyContent: "flex-start" }} onClick={() => setType(t)}>
@@ -907,7 +963,7 @@ function NewVisitForm({ ws, projectId, onCreated, onCancel }: { ws: WorkspaceDat
           className="btn primary grow big"
           onClick={async () => {
             try {
-              const r = await api<{ visit: { id: string } }>(`/api/projects/${projectId}/visits`, { body: { type, visitDate: date, appointmentTime: appt || null } });
+              const r = await api<{ visit: { id: string } }>(`/api/projects/${projectId}/visits`, { body: { type, visitDate: date, appointmentTime: appt || null, stage, serviceLine: line || null } });
               onCreated(r.visit.id);
             } catch (e) {
               setErr((e as Error).message);
