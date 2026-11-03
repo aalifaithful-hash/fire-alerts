@@ -4,6 +4,7 @@ import Header from "./Header";
 import SetupBanner from "./SetupBanner";
 import ScopeTab from "./ScopeTab";
 import PhotosTab from "./PhotosTab";
+import ScanTab from "./ScanTab";
 import RoomsTab from "./RoomsTab";
 import HistoryTab from "./HistoryTab";
 import InfoTab from "./InfoTab";
@@ -12,7 +13,7 @@ import { api } from "./api";
 import { useStatus } from "./useStatus";
 import type { WorkspaceData } from "./types";
 
-const TABS = ["scope", "photos", "rooms", "history", "info"] as const;
+const TABS = ["scope", "scan", "photos", "rooms", "history", "info"] as const;
 type Tab = (typeof TABS)[number];
 
 export default function Workspace({ projectId }: { projectId: string }) {
@@ -44,7 +45,9 @@ export default function Workspace({ projectId }: { projectId: string }) {
       try {
         const t = localStorage.getItem(`fsa-tab-${projectId}`) as Tab | null;
         if (t && TABS.includes(t)) setTab(t);
-      } catch {}
+      } catch {
+      /* storage blocked (private mode) — fine */
+    }
     });
   }, [reload, projectId]);
 
@@ -52,7 +55,9 @@ export default function Workspace({ projectId }: { projectId: string }) {
     setTab(t);
     try {
       localStorage.setItem(`fsa-tab-${projectId}`, t);
-    } catch {}
+    } catch {
+      /* storage blocked (private mode) — fine */
+    }
     window.scrollTo({ top: 0 });
   };
   const openVisit = (id: string | null) => {
@@ -89,6 +94,7 @@ export default function Workspace({ projectId }: { projectId: string }) {
       <main className="page">
         {status && !status.aiConfigured && tab !== "info" && <SetupBanner />}
         {tab === "scope" && <ScopeTab {...common} visitId={visitId} openVisit={openVisit} aiReady={!!status?.aiConfigured} goPhotos={() => pickTab("photos")} />}
+        {tab === "scan" && <ScanTab {...common} visitId={visitId} />}
         {tab === "photos" && <PhotosTab {...common} aiReady={!!status?.aiConfigured} blobReady={status ? !!status.blobUploads : null} />}
         {tab === "rooms" && <RoomsTab {...common} />}
         {tab === "history" && <HistoryTab {...common} visitId={visitId} openVisit={(id) => { openVisit(id); pickTab("scope"); }} />}

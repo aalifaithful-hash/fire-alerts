@@ -77,7 +77,9 @@ export function uploadWithProgress<T>(url: string, form: FormData, onProgress: (
       let data: { error?: string } = {};
       try {
         data = JSON.parse(xhr.responseText);
-      } catch {}
+      } catch {
+        /* non-JSON error body */
+      }
       if (xhr.status >= 200 && xhr.status < 300) resolve(data as T);
       else if (xhr.status === 413) reject(new ApiError("This PDF is too large for a direct server upload. Ask for Blob uploads to be enabled.", 413));
       else reject(new ApiError(data.error ?? `Upload failed (${xhr.status})`, xhr.status));

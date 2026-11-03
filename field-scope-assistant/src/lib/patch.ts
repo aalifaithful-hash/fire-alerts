@@ -270,8 +270,16 @@ export function applyOps(
           break;
         }
         let n = 0;
-        for (const it of facts.items) if (it.locationId === from) (it.locationId = to), n++;
-        for (const e of facts.equipment) if (e.locationId === from) (e.locationId = to), n++;
+        for (const it of facts.items)
+          if (it.locationId === from) {
+            it.locationId = to;
+            n++;
+          }
+        for (const e of facts.equipment)
+          if (e.locationId === from) {
+            e.locationId = to;
+            n++;
+          }
         changes.push(`Moved ${n} entr${n === 1 ? "y" : "ies"} from ${label(from)} to ${label(to)}`);
         break;
       }

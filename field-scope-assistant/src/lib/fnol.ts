@@ -220,10 +220,10 @@ export function parseFnol(text: string, rules: Rules = DEFAULT_RULES): FnolParse
   // --- identifiers & contact (number fields must contain a digit) ---
   const num = (f: Found<string> | null) => (f && /\d/.test(f.value) ? { ...f, value: f.value.split(/\s+/)[0].replace(/[,;.]$/, "") } : null);
   const claimNumber =
-    num(labeled(text, ["claim", "claim number", "claim no", "claim id"], 40)) ?? inline(text, /\bclaim\s*(?:#|no\.?|number)\s*[:\-]?\s*([A-Z0-9][A-Z0-9-]{4,})/i);
+    num(labeled(text, ["claim", "claim number", "claim no", "claim id"], 40)) ?? inline(text, /\bclaim\s*(?:#|no\.?|number)\s*[:-]?\s*([A-Z0-9][A-Z0-9-]{4,})/i);
   const assignmentNumber =
     num(labeled(text, ["assignment", "job", "file", "work order", "wo", "job number", "file number", "reference", "ref"], 40)) ??
-    inline(text, /\b(?:job|assignment|file|wo|work order)\s*(?:#|no\.?|number)\s*[:\-]?\s*([A-Z0-9][A-Z0-9-]{3,})/i);
+    inline(text, /\b(?:job|assignment|file|wo|work order)\s*(?:#|no\.?|number)\s*[:-]?\s*([A-Z0-9][A-Z0-9-]{3,})/i);
   if (assignmentNumber && claimNumber && assignmentNumber.value === claimNumber.value) assignmentNumber.confidence = "keyword";
   const policyNumber = num(labeled(text, ["policy", "policy number", "policy no"], 40));
   const carrier = labeled(text, ["carrier", "insurance company", "insurance carrier", "insurer", "insurance"]);
@@ -235,7 +235,7 @@ export function parseFnol(text: string, rules: Rules = DEFAULT_RULES): FnolParse
   const email = inline(text, /([A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,})/i);
 
   // --- address / unit ---
-  let address =
+  const address =
     labeled(text, ["loss location", "loss address", "property address", "property", "address", "location", "site address", "risk address"]) ??
     streetLine(text);
   let unit = labeled(text, ["unit", "apt", "apartment", "suite"], 20);

@@ -10,7 +10,7 @@ export async function extractPageTexts(bytes: Uint8Array): Promise<string[]> {
   const { getDocumentProxy, extractText } = await import("unpdf");
   const pdf = await getDocumentProxy(new Uint8Array(bytes));
   const { text } = await extractText(pdf, { mergePages: false });
-  return (Array.isArray(text) ? text : [text]).map((t) => (t ?? "").replace(/\u0000/g, "").trim());
+  return (Array.isArray(text) ? text : [text]).map((t) => (t ?? "").split("\u0000").join("").trim());
 }
 
 export function planBatches(pageCount: number, size = PAGES_PER_BATCH): [number, number][] {

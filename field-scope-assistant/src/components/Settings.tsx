@@ -78,6 +78,17 @@ export default function Settings() {
           <p className="muted">Nothing here needs to change for the app to keep working without AI.</p>
         </div>
 
+        <h2>Rules and defaults</h2>
+        <div className="card small">
+          Cleaning methods, what-goes-with-it, equipment ratios, flood-cut conventions, line-item format, exclusions, category-change flags,
+          program deadlines, hazard checks and FNOL keywords — every default is editable.
+          <div style={{ marginTop: 8 }}>
+            <a className="btn sm" href="/settings/rules">
+              Open rules &amp; defaults
+            </a>
+          </div>
+        </div>
+
         <h2>Checklist templates</h2>
         <p className="small muted" style={{ marginTop: -4, marginBottom: 8 }}>Starter templates are examples — edit them to match your company checklist.</p>
         {templates.map((t) => (

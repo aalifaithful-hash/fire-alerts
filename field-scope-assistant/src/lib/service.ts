@@ -16,7 +16,6 @@ import {
   type Location,
   type ScopeDoc,
   type VisitFacts,
-  type VisitType,
 } from "./schemas";
 import { todayNY, weekdayNY } from "./time";
 import type { DraftVersion, Project, Visit } from "./types";

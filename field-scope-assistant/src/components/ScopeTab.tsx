@@ -1,5 +1,5 @@
 "use client";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import MicButton from "./MicButton";
 import { useNotesAutosave } from "./useNotesAutosave";
 import Sheet from "./Sheet";
