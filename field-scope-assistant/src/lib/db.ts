@@ -156,6 +156,9 @@ const SCHEMA: string[] = [
   )`,
     `alter table visits add column if not exists text text not null default ''`,
     `alter table batches alter column created_at set default ''`,
+    `alter table checklist_templates alter column created_at set default ''`,
+    `alter table locations alter column created_at set default ''`,
+    `alter table evidence alter column created_at set default ''`,
 ];
 
 let schemaPromise: Promise<void> | null = null;
