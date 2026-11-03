@@ -154,6 +154,8 @@ const SCHEMA: string[] = [
     status TEXT NOT NULL DEFAULT 'open',
     created_at TEXT NOT NULL
   )`,
+    `alter table visits add column if not exists text text not null default ''`,
+    `alter table batches alter column created_at set default ''`,
 ];
 
 let schemaPromise: Promise<void> | null = null;
