@@ -182,10 +182,31 @@ export async function getDocument(projectId: string, id: string): Promise<Docume
 
 export type BatchProgress = { total: number; done: number; failed: number; pending: number; errors: string[] };
 
-/** Documents with batch progress (the Photos tab renders `progress` for every document). */
-export async function listDocuments(projectId: string): Promise<(Document & { progress: BatchProgress })[]> {
+/** Pages counted as having selectable text (same threshold as the scanned-page check). */
+export const TEXT_PAGE_MIN_CHARS = 25;
+
+/**
+ * Documents with AI-analysis batch progress and text-extraction results. Text
+ * extraction runs at upload and needs no AI key; `progress` is the AI photo analysis.
+ */
+export async function listDocuments(
+  projectId: string,
+): Promise<(Document & { progress: BatchProgress; textPages: number; extractedPages: number })[]> {
   const rows = await query<DocumentRow>`SELECT * FROM documents WHERE project_id = ${projectId} ORDER BY created_at DESC`;
-  return Promise.all(rows.map(async (r) => ({ ...toDocument(r), progress: await batchProgress(projectId, r.id) })));
+  return Promise.all(
+    rows.map(async (r) => {
+      const t = await queryOne<{ total: string; with_text: string }>`
+        SELECT COUNT(*) AS total,
+               COUNT(*) FILTER (WHERE length(regexp_replace(text, '[[:space:]]', '', 'g')) >= ${TEXT_PAGE_MIN_CHARS}) AS with_text
+        FROM doc_pages WHERE document_id = ${r.id}`;
+      return {
+        ...toDocument(r),
+        progress: await batchProgress(projectId, r.id),
+        extractedPages: Number(t?.total ?? 0),
+        textPages: Number(t?.with_text ?? 0),
+      };
+    }),
+  );
 }
 
 export async function setDocumentStatus(projectId: string, id: string, status: string, error?: string | null): Promise<void> {

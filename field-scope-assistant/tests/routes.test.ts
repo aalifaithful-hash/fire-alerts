@@ -18,6 +18,15 @@ const blobTokenRoute = await import("@/app/api/projects/[pid]/documents/blob/rou
 const fromBlobRoute = await import("@/app/api/projects/[pid]/documents/from-blob/route");
 const { checkUploadedBlob } = await import("@/lib/storage");
 
+const draftRoute = await import("@/app/api/projects/[pid]/visits/[vid]/draft/route");
+const itemsRoute = await import("@/app/api/projects/[pid]/visits/[vid]/items/route");
+const textRoute = await import("@/app/api/projects/[pid]/visits/[vid]/text/route");
+const exportRoute = await import("@/app/api/projects/[pid]/visits/[vid]/export/route");
+const docsRoute = await import("@/app/api/projects/[pid]/documents/route");
+const docTextRoute = await import("@/app/api/projects/[pid]/documents/[did]/text/route");
+const processRoute = await import("@/app/api/projects/[pid]/documents/[did]/process/route");
+const { PDFDocument, StandardFonts } = await import("pdf-lib");
+
 type Handler<P> = (req: NextRequest, ctx: { params: Promise<P> }) => Promise<Response>;
 async function call<P>(h: Handler<P>, method: string, params: P, body?: unknown, cookie?: string) {
   const req = new NextRequest("http://localhost/api/x", {
@@ -133,5 +142,77 @@ describe("direct Blob upload routes (issue 3)", () => {
     expect(checkUploadedBlob({ pathname: `projects/${p.id}/a-x1.pdf`, url: `${host}/projects/${p.id}/a-x1.pdf` }, `projects/${p.id}/`)).toBe(
       `${host}/projects/${p.id}/a-x1.pdf`,
     );
+  });
+});
+
+describe("no AI key: what must still work", () => {
+
+  it("a PM can start, write and export a scope by hand", async () => {
+    delete process.env.ANTHROPIC_API_KEY;
+    const p = await repo.createProject({ address: "30 Manual Ave" });
+    const kitchen = await repo.insertLocation(p.id, { floor: "3", unit: "3B", room: "Kitchen" });
+    const v = await repo.createVisit(p.id, { type: "contents_cleaning", visitDate: "2026-11-03" });
+    const ids = { pid: p.id, vid: v.id };
+
+    const started = await call(draftRoute.POST as Handler<typeof ids>, "POST", ids);
+    expect(started.status).toBe(200);
+    expect((await repo.getVisit(p.id, v.id)).doc?.title).toBe("Contents Cleaning Scope");
+
+    const added = await call(itemsRoute.POST as Handler<typeof ids>, "POST", ids, {
+      locationId: kitchen.id,
+      category: "contents",
+      text: "Pack out and clean kitchen contents",
+      status: "proposed",
+    });
+    expect(added.status).toBe(200);
+    const after = await repo.getVisit(p.id, v.id);
+    expect(after.text).toContain("Unit 3B — Kitchen");
+    expect(after.text).toContain("Pack out and clean kitchen contents.");
+    expect((await repo.listVisits(p.id))[0].doc).not.toBeNull(); // History no longer says "no draft"
+
+    const free = "CONTENTS CLEANING SCOPE\nUnit 3B — Kitchen\n• Pack out contents\n• Clean cabinets";
+    expect((await call(textRoute.PUT as Handler<typeof ids>, "PUT", ids, { text: free })).status).toBe(200);
+    expect((await repo.getVisit(p.id, v.id)).manualText).toBe(free);
+    expect((await repo.listDrafts(p.id, v.id)).length).toBe(3);
+
+    const req = new NextRequest(`http://localhost/x?format=docx`);
+    const res = await (exportRoute.GET as Handler<typeof ids>)(req, { params: Promise.resolve(ids) });
+    expect(res.status).toBe(200);
+    expect((await res.arrayBuffer()).byteLength).toBeGreaterThan(1000);
+  });
+
+  it("PDF text is extracted at upload; AI photo analysis waits without failing", async () => {
+    delete process.env.ANTHROPIC_API_KEY;
+    const pdf = await PDFDocument.create();
+    const font = await pdf.embedFont(StandardFonts.Helvetica);
+    for (let i = 1; i <= 4; i++) pdf.addPage([612, 792]).drawText(`Bedroom 1 - Photo ${i}: water staining on ceiling`, { x: 40, y: 700, size: 12, font });
+    const form = new FormData();
+    form.append("file", new File([Buffer.from(await pdf.save())], "429_E_52nd_St_Bedroom_1.pdf", { type: "application/pdf" }));
+    const p = await repo.createProject({ address: "429 E 52nd St" });
+    const up = await (docsRoute.POST as Handler<{ pid: string }>)(new NextRequest("http://localhost/x", { method: "POST", body: form }), {
+      params: Promise.resolve({ pid: p.id }),
+    });
+    expect(up.status).toBe(200);
+    const [doc] = await repo.listDocuments(p.id);
+    expect([doc.pageCount, doc.extractedPages, doc.textPages, doc.progress.total]).toEqual([4, 4, 4, 1]);
+
+    const text = await call(docTextRoute.GET as Handler<{ pid: string; did: string }>, "GET", { pid: p.id, did: doc.id });
+    expect((text.json!.pages as { text: string }[])[2].text).toContain("Photo 3: water staining");
+
+    const proc = await call(processRoute.POST as Handler<{ pid: string; did: string }>, "POST", { pid: p.id, did: doc.id }, {});
+    expect(proc.status).toBe(503);
+    expect(proc.json!.code).toBe("NO_API_KEY");
+    const [again] = await repo.listDocuments(p.id);
+    expect(again.progress).toMatchObject({ pending: 1, failed: 0, done: 0 }); // stays queued for when the key is added
+  });
+});
+
+describe("JSON payloads contain data, not unresolved promises", () => {
+  it("GET /api/templates returns an array (Settings page crashed on {})", async () => {
+    const templatesRoute = await import("@/app/api/templates/route");
+    const r = await call(templatesRoute.GET as Handler<Record<string, never>>, "GET", {} as Record<string, never>);
+    expect(r.status).toBe(200);
+    expect(Array.isArray(r.json!.templates)).toBe(true);
+    expect((r.json!.templates as unknown[]).length).toBeGreaterThan(0);
   });
 });

@@ -2,6 +2,7 @@
 import { useEffect, useRef, useState } from "react";
 import { api, ApiError, sleep, uploadProjectPdf } from "./api";
 import { locLabel } from "./labels";
+import ExtractedTextSheet from "./ExtractedTextSheet";
 import type { WorkspaceData } from "./types";
 import type { Evidence } from "@/lib/repo";
 
@@ -21,6 +22,7 @@ export default function PhotosTab({ ws, projectId, reload, flash, openEvidence, 
   const [running, setRunning] = useState<Record<string, string>>({}); // docId -> status message
   const [prog, setProg] = useState<Record<string, Prog>>({});
   const [err, setErr] = useState("");
+  const [viewText, setViewText] = useState<string | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const active = useRef(new Set<string>());
   const started = useRef(false);
@@ -110,7 +112,12 @@ export default function PhotosTab({ ws, projectId, reload, flash, openEvidence, 
       <button className="btn primary big" disabled={upload !== null || blobReady === null} onClick={() => fileRef.current?.click()}>
         {upload !== null ? `Uploading… ${upload}%` : "Upload CompanyCam PDF"}
       </button>
-      {!aiReady && <p className="small muted" style={{ marginTop: 6 }}>Uploads are stored and their text extracted; photo analysis starts once the AI key is set.</p>}
+      {!aiReady && (
+        <p className="small muted" style={{ marginTop: 6 }}>
+          Without the AI key, PDFs are stored and their selectable text is extracted (tap “View text”). Once the key is set, reading the photos and
+          sorting them by room starts the next time you open this tab.
+        </p>
+      )}
       {err && <div className="card danger" style={{ marginTop: 10 }}>{err}</div>}
 
       {ws.documents.length > 0 && <h2>Reports</h2>}
@@ -124,13 +131,31 @@ export default function PhotosTab({ ws, projectId, reload, flash, openEvidence, 
               <strong className="grow" style={{ wordBreak: "break-all" }}>{d.filename}</strong>
               <span className="small muted">{d.pageCount} pages</span>
             </div>
-            <div className="progress" aria-label="Processing progress">
-              <div style={{ width: `${pct}%`, background: pr.failed ? "var(--amber)" : undefined }} />
+            <div className="small">
+              <strong>Text extraction:</strong>{" "}
+              {d.extractedPages === 0
+                ? "not available for this file"
+                : d.textPages === 0
+                  ? `done — no selectable text on any of ${d.pageCount} pages (scanned; the AI reads these from the images)`
+                  : `done — ${d.textPages} of ${d.pageCount} page${d.pageCount === 1 ? "" : "s"} have selectable text`}
+              {d.extractedPages > 0 && (
+                <button className="btn sm ghost" style={{ marginLeft: 6 }} onClick={() => setViewText(d.id)}>
+                  View text
+                </button>
+              )}
             </div>
-            <div className="small muted">
-              {pr.done}/{pr.total} batches done{pr.failed ? ` · ${pr.failed} failed` : ""}
-              {msg ? ` · ${msg}` : ""}
+            <div className="small">
+              <strong>Photo analysis (AI):</strong>{" "}
+              {!aiReady && pr.done === 0 && pr.failed === 0
+                ? `waiting for the Anthropic API key (${pr.total} page batch${pr.total === 1 ? "" : "es"} queued)`
+                : `${pr.done} of ${pr.total} page batch${pr.total === 1 ? "" : "es"} done${pr.failed ? ` · ${pr.failed} failed` : ""}${msg ? ` · ${msg}` : ""}`}
             </div>
+            {aiReady && (
+              <div className="progress" aria-label="Photo analysis progress">
+                <div style={{ width: `${pct}%`, background: pr.failed ? "var(--amber)" : undefined }} />
+              </div>
+            )}
+            {d.error && <div className="small" style={{ color: "var(--amber)" }}>⚑ {d.error}</div>}
             {pr.errors.length > 0 && (
               <details className="small">
                 <summary>Errors</summary>
@@ -199,6 +224,7 @@ export default function PhotosTab({ ws, projectId, reload, flash, openEvidence, 
           ))}
         </div>
       ))}
+      {viewText && <ExtractedTextSheet projectId={projectId} documentId={viewText} onClose={() => setViewText(null)} flash={flash} />}
     </div>
   );
 }

@@ -254,13 +254,20 @@ export default function ScopeTab(p: Props) {
             <>
               <span className="spinner" /> Reading notes and photos…
             </>
+          ) : !p.aiReady ? (
+            "AI draft — needs the Anthropic API key"
           ) : v.doc ? (
             "Regenerate draft from notes"
           ) : (
             "Generate draft"
           )}
         </button>
-        {v.doc && <p className="small muted">Regenerating keeps your direct edits and accepted recommendations. For small fixes use the correction box below.</p>}
+        {!p.aiReady && (
+          <p className="small muted">
+            Your notes are saved. Without the AI key you can still write the scope yourself — see <strong>Scope</strong> below.
+          </p>
+        )}
+        {p.aiReady && v.doc && <p className="small muted">Regenerating keeps your direct edits and accepted recommendations. For small fixes use the correction box below.</p>}
       </div>
 
       {error && <div className="card danger" style={{ marginTop: 10 }}>{error}</div>}
@@ -309,7 +316,29 @@ export default function ScopeTab(p: Props) {
       {/* Scope document */}
       <h2 id="scope-doc">Scope</h2>
       {!v.doc && !v.manualText ? (
-        <div className="card muted">No draft yet. Add notes and/or a CompanyCam PDF, then Generate.</div>
+        <div className="card stack">
+          <div className="muted">
+            No draft yet.{" "}
+            {p.aiReady ? "Generate one from your notes and PDF, or start one yourself." : "Start one yourself — no AI key needed."}
+          </div>
+          <button
+            className={`btn big ${p.aiReady ? "" : "primary"}`}
+            disabled={!!busy}
+            onClick={() => run("draft", () => api<VisitData>(`${base}/draft`, { method: "POST" }))}
+          >
+            Start the scope manually (add bullets by room)
+          </button>
+          <button
+            className="btn"
+            disabled={!!busy}
+            onClick={async () => {
+              const d = await run("draft", () => api<VisitData>(`${base}/draft`, { method: "POST" }));
+              if (d) setTextEdit(d.text);
+            }}
+          >
+            Write the scope as free text
+          </button>
+        </div>
       ) : (
         <>
           <button className="btn primary big" style={{ marginBottom: 8 }} onClick={() => copy(data.slack, "Slack text")}>
@@ -387,7 +416,21 @@ export default function ScopeTab(p: Props) {
               </div>
             )
           )}
-          <AddBullet ws={ws} disabled={!!busy} onAdd={(b) => run("add", () => api<VisitData>(`${base}/items`, { body: b }))} />
+          {!v.manualText && v.doc && v.doc.sections.length === 0 && (
+            <p className="small muted" style={{ marginTop: 8 }}>No bullets yet. Add the first one below.</p>
+          )}
+          <AddBullet
+            ws={ws}
+            disabled={!!busy}
+            prominent={!p.aiReady || (v.doc?.sections.length ?? 0) === 0}
+            onAdd={(b) => run("add", () => api<VisitData>(`${base}/items`, { body: b }))}
+          />
+          {!p.aiReady && (
+            <p className="small muted" style={{ marginTop: 8 }}>
+              Manual editing: tap any bullet to edit, re-room or remove it; use <strong>Add a bullet</strong> for new lines (add rooms in the Rooms
+              tab); or <strong>Edit text</strong> to write freely. Every change is saved as a version. Plain-language corrections need the AI key.
+            </p>
+          )}
         </>
       )}
 
@@ -475,8 +518,8 @@ export default function ScopeTab(p: Props) {
         </button>
       </div>
 
-      {/* Persistent correction box */}
-      <div className="corrbar">
+      {/* Persistent correction box (AI). Without a key, manual editing is explained in the Scope section instead. */}
+      <div className={`corrbar ${p.aiReady ? "" : "hide"}`}>
         <div className="inner">
           {busy === "correct" && <div className="msg muted"><span className="spinner" /> Updating the scope…</div>}
           <form
@@ -591,13 +634,23 @@ function RecCard(p: { room: string; text: string; rationale: string | null; disa
   );
 }
 
-function AddBullet({ ws, onAdd, disabled }: { ws: WorkspaceData; disabled: boolean; onAdd: (b: { locationId: string | null; category: string; text: string; status: string }) => Promise<unknown> }) {
+function AddBullet({
+  ws,
+  onAdd,
+  disabled,
+  prominent = false,
+}: {
+  ws: WorkspaceData;
+  disabled: boolean;
+  prominent?: boolean;
+  onAdd: (b: { locationId: string | null; category: string; text: string; status: string }) => Promise<unknown>;
+}) {
   const [open, setOpen] = useState(false);
   const [b, setB] = useState({ locationId: "", category: "note", text: "", status: "proposed" });
   if (!open)
     return (
-      <button className="btn ghost sm" style={{ marginTop: 8 }} onClick={() => setOpen(true)}>
-        + Add a bullet manually
+      <button className={prominent ? "btn big" : "btn ghost sm"} style={{ marginTop: 8 }} onClick={() => setOpen(true)}>
+        + Add a bullet
       </button>
     );
   return (
@@ -788,7 +841,7 @@ function ChecklistBlock(p: {
             ))}
           </select>
           <button className="btn" disabled={p.busy || !tpl || !p.aiReady} onClick={() => p.onRun(tpl)}>
-            Fill checklist
+            {p.aiReady ? "Fill checklist" : "Fill checklist (needs AI key)"}
           </button>
         </div>
         <p className="small muted">Applicable ≠ completed. Items are only “completed” when your notes say so. Edit templates in Settings.</p>

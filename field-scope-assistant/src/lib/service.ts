@@ -647,6 +647,17 @@ export async function editEquipment(projectId: string, visitId: string, eqId: st
   return commit(projectId, visitId, facts, { trigger: "manual_edit", input: null, changes: [patch.remove ? "Removed equipment entry" : "Edited equipment"] });
 }
 
+/**
+ * Starts a scope draft without AI: renders the document from whatever facts the
+ * visit already has (header from the project/visit, rooms with any bullets).
+ * The PM then adds/edits bullets or writes free text. Idempotent.
+ */
+export async function startManualDraft(projectId: string, visitId: string) {
+  const v = await repo.getVisit(projectId, visitId);
+  if (v.doc || v.manualText) return;
+  await commit(projectId, visitId, v.facts, { trigger: "manual_edit", input: null, changes: ["Started a draft manually."] });
+}
+
 export async function setManualText(projectId: string, visitId: string, text: string | null) {
   const v = await repo.getVisit(projectId, visitId);
   return commit(projectId, visitId, v.facts, { trigger: "manual_edit", input: null, changes: [text ? "Edited scope text directly." : "Cleared text edits."] }, text?.trim() ? text : null);

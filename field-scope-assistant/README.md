@@ -36,10 +36,26 @@ For production the app runs on **Vercel + Neon Postgres + Vercel Blob** (current
 
 Local development: `DATABASE_URL=pglite://memory npm run dev` runs real Postgres in-process (data is lost on restart), or point it at a Neon dev branch.
 
+### Without an Anthropic API key
+
+Verified behavior with no `ANTHROPIC_API_KEY`:
+
+- **Works:** projects and search, floors, units and rooms; visits, times, access outcome and history; field notes (typed or dictated, autosaved); PDF upload and storage; page-text extraction at upload (Photos → View text); writing the scope by hand (Start the scope manually, then add, edit, move or remove bullets, or Edit text); versions and restore; Copy for Slack, PDF and DOCX; checklist template editing.
+- **Waits for the key:** AI photo analysis. Uploaded PDFs show "Photo analysis (AI): waiting for the Anthropic API key", and their batches stay queued (they are not failed). They run the next time the Photos tab is opened after the key is added.
+- **Needs the key:** AI-drafted scopes, plain-language corrections, AI questions and suggestions, checklist auto-fill, and company-manual rule extraction.
+
+**Turning AI on:**
+1. Sign up at console.anthropic.com and add a payment method under Billing.
+2. Create an API key.
+3. In Vercel, go to fire-alerts → Settings → Environment Variables and add `ANTHROPIC_API_KEY` (Production, plus Preview if used).
+4. Redeploy. Environment variables only apply to new deployments.
+
+The in-app Settings page has the same steps.
+
 ### Tests
 
 ```bash
-npm test          # 31 tests on in-process Postgres (PGlite): rules, renderers, corrections, isolation,
+npm test          # 35 tests on in-process Postgres (PGlite): rules, renderers, corrections, isolation,
                   # PDF pipeline, notes persistence through the real routes, Blob upload guards.
                   # Tests never use DATABASE_URL from your environment, so they cannot touch the hosted DB.
 npm run typecheck
