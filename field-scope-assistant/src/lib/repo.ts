@@ -68,8 +68,9 @@ export async function createProject(input: Record<string, unknown>, isDemo = fal
   const clean = cleanProjectInput(input);
   const id = newId("prj");
   const now = nowIso();
-  await query`INSERT INTO projects (id, data, is_demo, created_at, updated_at)
-    VALUES (${id}, ${JSON.stringify(clean)}, ${isDemo ? 1 : 0}, ${now}, ${now})`;
+        const name = clean.name ?? clean.address ?? "untitled project";
+  await query`INSERT INTO projects (id, data, is_demo, created_at, updated_at, name)
+    VALUES (${id}, ${JSON.stringify(clean)}, ${isDemo ? 1 : 0}, ${now}, ${now}, ${name})`;
   return getProject(id);
 }
 
