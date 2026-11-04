@@ -18,7 +18,7 @@ export async function workspacePayload(projectId: string) {
   const documents = await repo.listDocuments(projectId);
   // Galleries stored before the address check existed get checked (once) when the project opens.
   for (const d of documents) {
-    if (d.error?.includes(ADDRESS_MISMATCH)) continue;
+    if (d.kind === "mold_report" || d.error?.includes(ADDRESS_MISMATCH)) continue; // reports have their own "Wrong report?" check
     const pages = (await repo.getPages(d.id, 1, 3)).map((p) => p.text);
     const check = galleryAddressCheck(project.address || project.name, [d.filename.replace(/[_-]+/g, " "), ...pages]);
     if (!check.mismatch) continue;

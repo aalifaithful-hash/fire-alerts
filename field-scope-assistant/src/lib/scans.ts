@@ -11,6 +11,7 @@ import { commit, UserError } from "./service";
 import { buildSketch, type SketchModel } from "./sketch";
 import { nowIso, todayNY } from "./time";
 import type { Rules } from "./defaults";
+import type { ReportFindings } from "./report/types";
 
 /**
  * Room-by-room scan service. Saving any room re-analyzes the whole visit
@@ -76,7 +77,21 @@ export interface VisitScanView {
   sketchSvg: string;
 }
 
-function analyzeAll(recs: RoomScanRec[], locations: Location[], facts: VisitFacts, rules: Rules, yearBuilt: number | null, visitServiceLine: string | null = null) {
+/** Findings of the mold reports applied to these rooms (documents.findings). */
+async function reportsFor(projectId: string, recs: RoomScanRec[]): Promise<Map<string, ReportFindings>> {
+  const out = new Map<string, ReportFindings>();
+  for (const id of new Set(recs.map((r) => r.data.reportDocumentId).filter((x): x is string => !!x))) {
+    try {
+      const d = await repo.getDocument(projectId, id);
+      if (d.findings) out.set(id, d.findings as ReportFindings);
+    } catch {
+      /* report deleted — the room keeps its data, the lines lose the report quotes */
+    }
+  }
+  return out;
+}
+
+function analyzeAll(recs: RoomScanRec[], locations: Location[], facts: VisitFacts, rules: Rules, yearBuilt: number | null, visitServiceLine: string | null = null, reports: Map<string, ReportFindings> = new Map()) {
   const label = (id: string) => {
     const l = locations.find((x) => x.id === id);
     return l ? fullLabel(l) : "Room";
@@ -102,6 +117,7 @@ function analyzeAll(recs: RoomScanRec[], locations: Location[], facts: VisitFact
       reconstructionRequested: facts.reconstructionRequested,
       yearBuilt,
       visitServiceLine,
+      report: rec.data.reportDocumentId ? (reports.get(rec.data.reportDocumentId) ?? null) : null,
     });
     return { rec, analysis };
   });
@@ -143,7 +159,7 @@ async function persistAndSync(projectId: string, visitId: string, change: string
     getRules(),
     yearBuiltFor(projectId),
   ]);
-  const analyzed = analyzeAll(recs, locations, visit.facts, rules, yearBuilt, visit.serviceLine);
+  const analyzed = analyzeAll(recs, locations, visit.facts, rules, yearBuilt, visit.serviceLine, await reportsFor(projectId, recs));
   for (const { rec, analysis } of analyzed) await writeScan(projectId, visitId, rec.locationId, { ...rec.data, lines: analysis.lines });
   const facts = syncedFacts(visit.facts, analyzed);
   const before = JSON.stringify(visit.facts.items.filter((i) => i.id.startsWith("ln")).map((i) => i.text));
@@ -160,7 +176,7 @@ export async function getVisitScans(projectId: string, visitId: string): Promise
     getRules(),
     yearBuiltFor(projectId),
   ]);
-  const analyzed = analyzeAll(recs, locations, visit.facts, rules, yearBuilt, visit.serviceLine);
+  const analyzed = analyzeAll(recs, locations, visit.facts, rules, yearBuilt, visit.serviceLine, await reportsFor(projectId, recs));
   const roomsOut = new Set(visit.facts.exclusions.filter((e) => e.target === "room").map((e) => e.locationId));
   const loc = (id: string) => locations.find((l) => l.id === id);
 
@@ -248,7 +264,7 @@ export async function exportAppendix(projectId: string, visitId: string) {
     getRules(),
     yearBuiltFor(projectId),
   ]);
-  const analyzed = analyzeAll(recs, locations, visit.facts, rules, yearBuilt, visit.serviceLine);
+  const analyzed = analyzeAll(recs, locations, visit.facts, rules, yearBuilt, visit.serviceLine, await reportsFor(projectId, recs));
   const roomsOut = new Set(visit.facts.exclusions.filter((e) => e.target === "room").map((e) => e.locationId));
   const rowsOut: { room: string; activity: string; item: string; quantity: string; unit: string; rate: string; total: string; notes: string }[] = [];
   for (const { rec, analysis } of analyzed) {
@@ -352,6 +368,24 @@ function exclusionText(e: Exclusion, rules: Rules, locations: Location[]): strin
     return `${l ? fullLabel(l) : "Room"} excluded from this scope (${e.date}, decided by ${who}). Reason: ${e.reason}.`;
   }
   return `${(e.serviceLine ?? "Service line").replace(/^\w/, (c) => c.toUpperCase())} excluded from this scope (${e.date}, decided by ${who}). Reason: ${e.reason}.`;
+}
+
+/** Runs the room rules on a scan without saving it (report preview). */
+export async function previewRoom(projectId: string, visitId: string, locationId: string, data: RoomScanData, roomName: string | null, yearBuilt: number | null, report: ReportFindings | null) {
+  const [locations, visit, rules] = await Promise.all([repo.listLocations(projectId), repo.getVisit(projectId, visitId), getRules()]);
+  const l = locations.find((x) => x.id === locationId);
+  const label = l ? fullLabel({ ...l, room: roomName ?? l.room }) : roomName ?? "Room";
+  return analyzeRoom(data, {
+    rules,
+    roomLabel: label,
+    run: [],
+    exclusions: visit.facts.exclusions,
+    locationId,
+    reconstructionRequested: visit.facts.reconstructionRequested,
+    yearBuilt,
+    visitServiceLine: visit.serviceLine,
+    report,
+  });
 }
 
 export { airMoverCalc };

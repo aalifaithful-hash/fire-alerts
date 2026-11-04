@@ -5,6 +5,7 @@ Status: **phases a1–a3, a7, the data-model split and the room workflow (c, d1,
 Revision 2 (Nov 3): adds a professional critique, sketch output, the room-by-room scan workflow, and customer-preference exclusions.
 Revision 3 (Nov 3): owner decision to proceed with professional defaults. See "Build status" and "Defaults chosen" below.
 Revision 4 (Nov 3): pluggable AI provider (Claude or Gemini), still switched off. See "AI provider" below.
+Revision 5 (Nov 4): mold report upload, rules analysis and scope matching. See "Mold report" below.
 
 ## Build status (Nov 3, revision 3)
 
@@ -331,6 +332,31 @@ A key on its own does **not** turn AI on. `AI_PROVIDER` must name the provider. 
    - optional `GEMINI_MODEL`
 2. Redeploy. Settings → AI should then read "AI analysis is on: gemini (gemini-3.8-flash)".
 3. To go back to Claude, set `AI_PROVIDER=anthropic` and `ANTHROPIC_API_KEY`. To turn AI off, set `AI_PROVIDER=none` or remove it. Redeploy after each change.
+
+## Mold report: upload, rules analysis, scope matching (built Nov 4, AI off)
+
+**Upload.** Scan tab → **Mold report** panel, shown on mold jobs. A PDF, or a photo of the report, uses the same direct-to-Blob path as galleries (same size limits). Reports are stored as documents of kind `mold_report`.
+
+**Wrong report?** If the report's address, unit or name differs from the project, it's held behind a "Wrong report?" card. The PM either confirms it's this job's report or cancels the upload. Nothing from it reaches the scope until confirmed.
+
+**Rules analysis** (no AI): `src/lib/report/rules.ts` reads the selectable text and shows each finding with its quote and page:
+- address, name, assessor and date;
+- room and measurements, affected area, and whether the whole floor or part of it has growth;
+- containment level and how far removal goes;
+- subfloor cleaned or removed, and growth on walls, baseboard backs or framing;
+- clearance criteria and who does the check;
+- moisture source and whether it's fixed;
+- year built, whether the flooring runs into other rooms, and mold type and condition.
+
+Anything the report doesn't state stays blank and is listed as missing.
+
+**Scope matching** (`src/lib/report/match.ts`): proposes scan changes, each with its quote. A change that would replace something the PM entered is shown as a mismatch warning and is unticked by default, so nothing is silently overwritten. Applying re-runs the room rules: lines come back as suggested, with quantities, the math and the report's words in the justification. The "pending the mold report" scope items turn into a list of what's still missing.
+
+**AI path:** `src/lib/report/analyzer.ts` has one analyzer interface. Only the rules analyzer is registered today. Scanned or photo reports show "AI analysis not enabled". Adding an AI analyzer later needs the owner's approval and a key.
+
+**Fixtures** (SAMPLE, fictional; `scripts/make-sample-mold-reports.mjs`):
+- `tests/fixtures/sample-mold-report-308-E-72nd-St-4D.pdf` (Test 1): leaves the clearance criteria and who does the check, the year built, and the flooring run unanswered.
+- `tests/fixtures/sample-mold-report-429-E-52nd-St-5C.pdf`: the wrong address.
 
 ## Suggested order
 

@@ -1,6 +1,8 @@
 import type { Rules } from "./defaults";
 import type { Exclusion, RoomScanData, ScopeLine } from "./scan";
 import { baseboardLF, floodCutSF, r1, takeoff, wallPaintSF, type Takeoff } from "./takeoff";
+import { reportJustifications, stillMissing } from "./report/match";
+import type { ReportFindings } from "./report/types";
 
 /**
  * Room analysis (no AI). From what the PM recorded about one room — where the
@@ -21,6 +23,8 @@ export interface RoomContext {
   yearBuilt: number | null;
   /** The visit's kind of work — sets the room's loss type when the PM hasn't (e.g. a mold visit → mold). */
   visitServiceLine?: string | null;
+  /** Findings of the mold report applied to this room (rules analyzer output). */
+  report?: ReportFindings | null;
 }
 
 export interface RoomAnalysis {
@@ -155,7 +159,7 @@ export function analyzeRoom(scanIn: RoomScanData, ctx: RoomContext): RoomAnalysi
   // continuous flooring run: replacement goes to the natural break
   const thisReplace = m.flooring.action === "replace" || (porousFloor && cat === "3");
   const runReplace = thisReplace || ctx.run.some((r) => r.replace);
-  if (m.flooring.action === "replace" && !m.flooring.continuousRun)
+  if (m.flooring.action === "replace" && !m.flooring.continuousRun && !m.flooring.breakNote)
     questions.push(`${room}: does this ${m.flooring.type || "flooring"} continue into other rooms without a natural break? Give the run a name (e.g. "A") in each room it covers.`);
   if (runReplace && R.whatGoesWithIt.flooringReplacement.enabled && (thisReplace || (m.flooring.continuousRun && R.whatGoesWithIt.flooringReplacement.fullContinuousRun))) {
     const others = ctx.run.filter((r) => r.roomLabel !== room);
@@ -299,9 +303,13 @@ export function analyzeRoom(scanIn: RoomScanData, ctx: RoomContext): RoomAnalysi
       const what = `${m.flooring.type || "flooring"} with growth`;
       moldAdd({ id: "mold.floor.remove", ruleId: "mold.removeWhenGrowth", kind: "mitigation", scopeCategory: "removal", activity: "Remove & bag", item: what, quantity: affFloorSF, unit: "SF", calc: floorCalc, justification: `Mold under the ${m.flooring.type || "flooring"}: porous/semi-porous material with growth is removed, not cleaned (S520).` });
       moldAdd({ id: "mold.underlayment.remove", ruleId: "mold.removeWhenGrowth", kind: "mitigation", scopeCategory: "removal", activity: "Remove & bag", item: "underlayment / vapor barrier under the flooring (if present)", quantity: affFloorSF, unit: "SF", calc: floorCalc, justification: "Sits in the growth zone between flooring and subfloor." });
-      moldAdd({ id: "mold.subfloor.clean", ruleId: "mold.cleaningSteps", kind: "mitigation", scopeCategory: "cleaning", activity: "Clean", item: `subfloor — ${MR.cleaningSteps.map((x) => x.replace(/^[A-Z](?=[a-z])/, (c) => c.toLowerCase())).join(" → ")}`, quantity: affFloorSF, unit: "SF", calc: floorCalc, justification: "Remove remaining growth from the subfloor left in place (S520). If the assessor finds the subfloor itself compromised, it is removed instead." });
+      if (m.subfloor === "remove") {
+        moldAdd({ id: "mold.subfloor.remove", ruleId: "mold.removeWhenGrowth", kind: "mitigation", scopeCategory: "removal", activity: "Remove & bag", item: "subfloor with growth", quantity: affFloorSF, unit: "SF", calc: floorCalc, justification: "Subfloor with growth is removed (assessor's plan)." });
+        add({ id: "mold.subfloor.replace", ruleId: "mold.removeWhenGrowth", kind: "reconstruction", scopeCategory: "replacement", activity: "Replace", item: "subfloor", quantity: affFloorSF, unit: "SF", calc: floorCalc, justification: "Replaces the subfloor removed (same SF)." });
+      } else
+  moldAdd({ id: "mold.subfloor.clean", ruleId: "mold.cleaningSteps", kind: "mitigation", scopeCategory: "cleaning", activity: "Clean", item: `subfloor — ${MR.cleaningSteps.map((x) => x.replace(/^[A-Z](?=[a-z])/, (c) => c.toLowerCase())).join(" → ")}`, quantity: affFloorSF, unit: "SF", calc: floorCalc, justification: "Remove remaining growth from the subfloor left in place (S520). If the assessor finds the subfloor itself compromised, it is removed instead." });
       if (MR.antimicrobialAfterCleaning)
-        moldAdd({ id: "mold.antimicrobial", ruleId: "mold.antimicrobial", kind: "mitigation", scopeCategory: "antimicrobial", activity: "Apply", item: "antimicrobial to the cleaned subfloor", quantity: affFloorSF, unit: "SF", calc: floorCalc, justification: "After physical removal and cleaning — not a substitute for it." });
+        moldAdd({ id: "mold.antimicrobial", ruleId: "mold.antimicrobial", kind: "mitigation", scopeCategory: "antimicrobial", activity: "Apply", item: m.subfloor === "remove" ? "antimicrobial to the exposed joists after cleaning" : "antimicrobial to the cleaned subfloor", quantity: affFloorSF, unit: "SF", calc: floorCalc, justification: "After physical removal and cleaning — not a substitute for it." });
       moldAdd({ id: "mold.dispose", ruleId: "mold.disposal", kind: "mitigation", scopeCategory: "removal", activity: "Bag & dispose", item: "removed materials in sealed 6 mil bags", quantity: affFloorSF, unit: "SF", calc: `same area as removed: ${floorCalc}`, justification: "Removed moldy material leaves the containment sealed." });
     } else if (mold && m.flooring.affected) questions.push(`${room}: ${m.flooring.type || "flooring"} with growth — remove, or clean in place? (S520 removes porous/semi-porous material with growth)`);
     moldAdd({ id: "mold.finalclean", ruleId: "mold.cleaningSteps", kind: "mitigation", scopeCategory: "cleaning", activity: "Final clean", item: "containment — HEPA vacuum and damp-wipe all surfaces before clearance", quantity: t.floorSF, unit: "SF", calc: t.floorSF != null ? `${t.floorCalc} (work-area floor)` : "room not measured", justification: "Final detail clean so the area can pass post-remediation verification." });
@@ -315,7 +323,9 @@ export function analyzeRoom(scanIn: RoomScanData, ctx: RoomContext): RoomAnalysi
     if (inherited) notes.push("Loss type taken from the visit (Mold remediation) — change it in step 1 if this room is different.");
     if (!MR.dehumidifierPerContainment) notes.push("Equipment: HEPA negative air / air scrubber for the containment. Add a dehumidifier only if moisture readings are elevated.");
     notes.push(...assumed.map((a) => `Assumed: ${a}`));
-    if (report !== "received")
+    if (report === "received" && ctx.report)
+      pending.push(...stillMissing(ctx.report, { yearBuiltKnown: ctx.yearBuilt != null, runKnown: !!(m.flooring.continuousRun || m.flooring.breakNote) }).map((x) => `STILL MISSING after the mold report: ${x}`));
+    else if (report !== "received")
       pending.push(
         "Affected area and extent (SF) — sets every removal and cleaning quantity",
         "Containment level and removal limits in the remediation plan",
@@ -370,8 +380,12 @@ export function analyzeRoom(scanIn: RoomScanData, ctx: RoomContext): RoomAnalysi
   if (drafts.some(isDemo) && ctx.yearBuilt == null) questions.push(`${room}: year built? (lead/asbestos check before demolition — set it on the property page)`);
 
   // ---------------- decisions, exclusions, reconstruction switch ----------------
+  if (mold && ctx.report && scan.loss.assessmentReport === "received") {
+    const rj = reportJustifications(ctx.report, { lengthFt: t.floorSF != null ? scan.measurements.lengthFt : null, widthFt: t.floorSF != null ? scan.measurements.widthFt : null }, room.replace(/^.*— /, ""));
+    for (const d of drafts) if (rj[d.id]) d.justification = `${d.justification} ${rj[d.id]}`;
+  }
   if (mold) {
-    const seq = ["mold.containment", "mold.negair", "mold.ppe", "baseboard", "mold.floor.remove", "mold.underlayment.remove", "mold.subfloor.clean", "mold.antimicrobial", "mold.dehu", "mold.dispose", "mold.finalclean", "mold.pcv"];
+    const seq = ["mold.containment", "mold.negair", "mold.ppe", "baseboard", "mold.floor.remove", "mold.underlayment.remove", "mold.subfloor.remove", "mold.subfloor.clean", "mold.antimicrobial", "mold.dehu", "mold.dispose", "mold.finalclean", "mold.pcv"];
     const rank = (d: Draft) => (d.kind === "reconstruction" ? 1000 : seq.indexOf(d.id) === -1 ? 500 : seq.indexOf(d.id));
     drafts.sort((a, b) => rank(a) - rank(b));
   }

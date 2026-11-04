@@ -81,6 +81,8 @@ export const ScanMaterials = z.object({
     })
     .default({ affected: false, affectedPct: null, action: null }),
   insulation: z.boolean().default(false),
+  /** Mold: subfloor under removed flooring — cleaned in place or removed (from the assessor's report). */
+  subfloor: z.enum(["clean", "remove"]).nullable().default(null),
   cabinets: z
     .object({ affected: z.boolean().default(false), lf: n.default(null), detach: z.boolean().default(false) })
     .default({ affected: false, lf: null, detach: false }),
@@ -139,6 +141,8 @@ export const RoomScanData = z.object({
   moisturePoints: z.array(MoisturePoint).default([]),
   equipmentPlaced: z.array(PlacedEquipment).default([]),
   lines: z.array(ScopeLine).default([]),
+  /** The mold report applied to this room (documents.id), if any. */
+  reportDocumentId: z.string().nullable().default(null),
   /** PM decisions keyed by line id (kept even when a line disappears and comes back). */
   decisions: z.record(z.string(), z.enum(["accepted", "rejected"])).default({}),
 });

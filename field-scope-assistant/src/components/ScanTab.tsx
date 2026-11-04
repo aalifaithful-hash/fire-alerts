@@ -1,5 +1,6 @@
 "use client";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import ReportPanel from "./ReportPanel";
 import { api } from "./api";
 import { locLabel } from "./labels";
 import type { WorkspaceData } from "./types";
@@ -18,6 +19,7 @@ const blank = (): Editable => ({
     walls: { material: null, affectedWalls: [], wetHeightIn: null, floodCut: "auto" },
     ceiling: { affected: false, affectedPct: null, action: null },
     insulation: false,
+    subfloor: null,
     cabinets: { affected: false, lf: null, detach: false },
     fixtures: [],
   },
@@ -25,6 +27,7 @@ const blank = (): Editable => ({
   measurements: { lengthFt: null, widthFt: null, heightFt: null, segments: null, openings: [] },
   moisturePoints: [],
   equipmentPlaced: [],
+  reportDocumentId: null,
 });
 const WALLS = ["N", "E", "S", "W"];
 const num = (v: string) => (v.trim() === "" || Number.isNaN(Number(v)) ? null : Number(v));
@@ -128,9 +131,21 @@ export default function ScanTab({ ws, projectId, visitId, reload, flash }: Props
   const water = f.loss.type === "water" || f.loss.type === "sewage";
   const lines = room?.data.lines ?? [];
   const recon = view?.reconstructionRequested ?? false;
+  const moldJob = ws.visits.find((x) => x.id === visitId)?.serviceLine === "mold" || !!view?.rooms.some((r) => r.data.loss.type === "mold") || ws.documents.some((d) => d.kind === "mold_report");
 
   return (
     <div>
+      {moldJob && (
+        <ReportPanel
+          projectId={projectId}
+          visitId={visitId}
+          onApplied={async () => {
+            setSel(null);
+            await load();
+            await reload();
+          }}
+        />
+      )}
       {/* 1. Room picker */}
       <h2 style={{ marginTop: 4 }}>1. Pick the room</h2>
       <div className="row">
@@ -201,6 +216,7 @@ export default function ScanTab({ ws, projectId, visitId, reload, flash }: Props
               <Chk label="Flooring affected" checked={m.flooring.affected} onChange={(v) => upd((d) => (d.materials.flooring.affected = v))} />
               <Num label="% of floor affected" value={m.flooring.affectedPct} onChange={(v) => upd((d) => (d.materials.flooring.affectedPct = v))} />
               <Sel label="Flooring action" value={m.flooring.action ?? ""} onChange={(v) => upd((d) => (d.materials.flooring.action = (v || null) as Editable["materials"]["flooring"]["action"]))} options={[["", "—"], ["dry_in_place", "Dry in place"], ["remove", "Remove"], ["replace", "Replace"]]} />
+              {f.loss.type === "mold" && <Sel label="Subfloor (mold)" value={m.subfloor ?? ""} onChange={(v) => upd((d) => (d.materials.subfloor = (v || null) as Editable["materials"]["subfloor"]))} options={[["", "—"], ["clean", "Clean & treat (stays)"], ["remove", "Remove"]]} />}
               <Txt label="Continuous run (same name in every room it runs through)" value={m.flooring.continuousRun} onChange={(v) => upd((d) => (d.materials.flooring.continuousRun = v))} />
               <Txt label="Natural break (e.g. threshold at hallway)" value={m.flooring.breakNote} onChange={(v) => upd((d) => (d.materials.flooring.breakNote = v))} />
             </div>

@@ -3,6 +3,7 @@ import { QUICK_JOBS, type QuickJob } from "./quickJobs";
 export { QUICK_JOBS, QUICK_JOB_LABELS, type QuickJob } from "./quickJobs";
 import { createAssignmentFromFnol, IntakeError, openProjectForAssignment, type AssignmentInput } from "./intake";
 import * as repo from "./repo";
+import { findRoomName } from "./rooms";
 import { saveRoomScan } from "./scans";
 import { RoomScanData } from "./scan";
 
@@ -33,22 +34,6 @@ export interface QuickStartInput {
   notes?: string | null;
 }
 
-const ROOMS: [RegExp, string][] = [
-  [/\bprimary bed(room)?|master bed(room)?\b/i, "Primary bedroom"],
-  [/\bbed ?room\s*(\d)\b/i, "Bedroom $1"],
-  [/\bbed ?room\b/i, "Bedroom"],
-  [/\bprimary bath(room)?|master bath(room)?\b/i, "Primary bathroom"],
-  [/\bbath ?room|\bbath\b/i, "Bathroom"],
-  [/\bkitchen\b/i, "Kitchen"],
-  [/\bliving ?room\b/i, "Living room"],
-  [/\bdining ?room\b/i, "Dining room"],
-  [/\bhall(way)?\b/i, "Hallway"],
-  [/\bfoyer|entry(way)?\b/i, "Foyer"],
-  [/\bcloset\b/i, "Closet"],
-  [/\blaundry\b/i, "Laundry"],
-  [/\bbasement\b/i, "Basement"],
-  [/\boffice|den\b/i, "Office"],
-];
 
 /** Reads the PM's notes into a first room scan. Returns what it understood so the PM can check it. */
 export function seedFromNotes(job: QuickJob, notesIn: string | null | undefined) {
@@ -56,14 +41,7 @@ export function seedFromNotes(job: QuickJob, notesIn: string | null | undefined)
   const understood: string[] = [];
   const lossType = job === "contents" || job === "reconstruction" ? null : job === "smoke" ? "smoke" : job;
   if (lossType) understood.push(`Loss: ${lossType}`);
-  let room: string | null = null;
-  for (const [re, name] of ROOMS) {
-    const mm = notes.match(re);
-    if (mm) {
-      room = name.replace("$1", mm[1] ?? "");
-      break;
-    }
-  }
+  const room = findRoomName(notes);
   understood.push(room ? `Room: ${room}` : "Room: not stated (named “Affected area (room TBD)”)");
 
   const floorWord = /\bfloor(ing|s)?\b/i.test(notes);

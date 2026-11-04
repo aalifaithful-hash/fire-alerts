@@ -130,6 +130,7 @@ export default function PhotosTab({ ws, projectId, reload, flash, openEvidence, 
           <div key={d.id} className="card stack">
             <div className="row">
               <strong className="grow" style={{ wordBreak: "break-all" }}>{d.filename}</strong>
+              {d.kind === "mold_report" && <span className="chip amber">Mold report — see Scan</span>}
               <span className="small muted">{d.pageCount} pages</span>
             </div>
             <div className="small">

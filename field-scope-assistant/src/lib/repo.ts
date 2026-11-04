@@ -150,16 +150,41 @@ export type Document = {
   status: string;
   error: string | null;
   createdAt: string;
+  kind: "gallery" | "mold_report";
+  contentType: string;
+  /** Mold report: analyzer output (JSON). */
+  findings: unknown | null;
+  /** Mold report: the PM confirmed a report whose address/name didn't match is still theirs. */
+  confirmed: boolean;
 };
 type DocumentRow = {
   id: string; project_id: string; filename: string; stored_path: string;
   size: number; page_count: number; status: string; error: string | null; created_at: string;
+  kind?: string | null; content_type?: string | null; findings?: string | null; confirmed?: number | null;
 };
 function toDocument(r: DocumentRow): Document {
   return {
     id: r.id, projectId: r.project_id, filename: r.filename, storedPath: r.stored_path,
     size: Number(r.size), pageCount: Number(r.page_count), status: r.status, error: r.error, createdAt: r.created_at,
+    kind: r.kind === "mold_report" ? "mold_report" : "gallery",
+    contentType: r.content_type || "application/pdf",
+    findings: r.findings ? safeJson(r.findings) : null,
+    confirmed: !!Number(r.confirmed ?? 0),
   };
+}
+function safeJson(s: string): unknown {
+  try {
+    return JSON.parse(s);
+  } catch {
+    return null;
+  }
+}
+
+export async function setDocumentReport(projectId: string, id: string, patch: { kind?: "mold_report"; contentType?: string; findings?: unknown; confirmed?: boolean }) {
+  if (patch.kind) await query`UPDATE documents SET kind = ${patch.kind} WHERE id = ${id} AND project_id = ${projectId}`;
+  if (patch.contentType) await query`UPDATE documents SET content_type = ${patch.contentType} WHERE id = ${id} AND project_id = ${projectId}`;
+  if (patch.findings !== undefined) await query`UPDATE documents SET findings = ${JSON.stringify(patch.findings)} WHERE id = ${id} AND project_id = ${projectId}`;
+  if (patch.confirmed !== undefined) await query`UPDATE documents SET confirmed = ${patch.confirmed ? 1 : 0} WHERE id = ${id} AND project_id = ${projectId}`;
 }
 
 export async function createDocument(

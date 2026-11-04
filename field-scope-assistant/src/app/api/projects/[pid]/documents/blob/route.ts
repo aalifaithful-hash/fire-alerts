@@ -27,10 +27,11 @@ export const POST = route<P>(async (req, { pid }) => {
     request: req,
     onBeforeGenerateToken: async (pathname) => {
       // A token can only write inside this project's folder.
-      if (!pathname.startsWith(prefix) || pathname.includes("..") || !/\.pdf$/i.test(pathname))
+      // PDFs (galleries and mold reports) and photos of a mold report.
+      if (!pathname.startsWith(prefix) || pathname.includes("..") || !/\.(pdf|jpe?g|png|heic|heif|webp)$/i.test(pathname))
         throw new UserError("Invalid upload path.");
       return {
-        allowedContentTypes: ["application/pdf"],
+        allowedContentTypes: ["application/pdf", "image/jpeg", "image/png", "image/heic", "image/heif", "image/webp"],
         maximumSizeInBytes: MAX_UPLOAD_BYTES,
         addRandomSuffix: true,
       };

@@ -1,5 +1,6 @@
 import { body, route } from "@/lib/http";
 import { ingestPdf, UserError } from "@/lib/service";
+import { ingestReport } from "@/lib/report/service";
 import { blobEnabled, blobStoredPath, checkUploadedBlob, projectKey, readStoredFile } from "@/lib/storage";
 
 type P = { pid: string };
@@ -12,7 +13,7 @@ export const maxDuration = 300;
  */
 export const POST = route<P>(async (req, { pid }) => {
   if (!blobEnabled()) throw new UserError("Direct uploads are not configured.");
-  const b = await body<{ url?: string; pathname?: string; filename?: string }>(req);
+  const b = await body<{ url?: string; pathname?: string; filename?: string; kind?: string }>(req);
   let url: string;
   try {
     // Only blobs inside this project's folder can be attached to this project.
@@ -23,5 +24,6 @@ export const POST = route<P>(async (req, { pid }) => {
   const stored = blobStoredPath(url);
   const bytes = await readStoredFile(stored);
   const name = String(b.filename || "report.pdf").slice(0, 200);
+  if (b.kind === "mold_report") return { document: await ingestReport(pid, { name, bytes, blobUrl: url }) };
   return { document: await ingestPdf(pid, { name, bytes, blobUrl: url }) };
 });

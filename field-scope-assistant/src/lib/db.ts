@@ -302,6 +302,11 @@ const SCHEMA: string[] = [
   // --- kind of visit (stage) separate from kind of work (service line) ---
   `ALTER TABLE visits ADD COLUMN IF NOT EXISTS stage TEXT`,
   `ALTER TABLE visits ADD COLUMN IF NOT EXISTS service_line TEXT`,
+  // --- mold reports stored as documents of kind 'mold_report' (galleries stay 'gallery') ---
+  `ALTER TABLE documents ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT 'gallery'`,
+  `ALTER TABLE documents ADD COLUMN IF NOT EXISTS content_type TEXT NOT NULL DEFAULT 'application/pdf'`,
+  `ALTER TABLE documents ADD COLUMN IF NOT EXISTS findings TEXT`,
+  `ALTER TABLE documents ADD COLUMN IF NOT EXISTS confirmed INTEGER NOT NULL DEFAULT 0`,
 ];
 
 let schemaPromise: Promise<void> | null = null;

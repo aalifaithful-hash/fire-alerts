@@ -39,18 +39,23 @@ export async function uploadProjectPdf<T>(
   projectId: string,
   file: File,
   onProgress: (pct: number) => void,
-  opts: { direct: boolean },
+  opts: { direct: boolean; kind?: "gallery" | "mold_report" },
 ): Promise<T> {
+  const kind = opts.kind ?? "gallery";
   if (opts.direct) {
     const { upload } = await import("@vercel/blob/client");
     onProgress(0);
     const safeName = file.name.replace(/[^a-z0-9._-]+/gi, "-").replace(/^-+|-+$/g, "").slice(0, 80) || "report";
-    const pathname = `projects/${projectId}/${safeName.replace(/\.pdf$/i, "")}.pdf`;
+    // galleries are PDFs; a mold report may also be a photo (same Blob path, same size limits)
+    const imgExt = kind === "mold_report" ? (file.type.match(/^image\/(jpeg|png|heic|heif|webp)$/)?.[1] ?? (/\.(jpe?g|png|heic|heif|webp)$/i.exec(file.name)?.[1] ?? null)) : null;
+    const ext = imgExt ? imgExt.toLowerCase().replace("jpeg", "jpg") : "pdf";
+    const pathname = `projects/${projectId}/${safeName.replace(/\.(pdf|jpe?g|png|heic|heif|webp)$/i, "")}.${ext}`;
+    const contentType = ext === "pdf" ? "application/pdf" : ext === "jpg" ? "image/jpeg" : `image/${ext}`;
     let blob: { url: string; pathname: string };
     try {
       blob = await upload(pathname, file, {
         access: "private",
-        contentType: "application/pdf",
+        contentType,
         handleUploadUrl: `/api/projects/${projectId}/documents/blob`,
         multipart: file.size > 8 * 1024 * 1024,
         onUploadProgress: (e) => onProgress(Math.min(99, Math.round(e.percentage))),
@@ -60,10 +65,11 @@ export async function uploadProjectPdf<T>(
     }
     onProgress(100);
     // Ingest (text extraction + page batches) runs on the server from Blob.
-    return api<T>(`/api/projects/${projectId}/documents/from-blob`, { body: { url: blob.url, pathname: blob.pathname, filename: file.name } });
+    return api<T>(`/api/projects/${projectId}/documents/from-blob`, { body: { url: blob.url, pathname: blob.pathname, filename: file.name, kind } });
   }
   const form = new FormData();
   form.append("file", file);
+  form.append("kind", kind);
   return uploadWithProgress<T>(`/api/projects/${projectId}/documents`, form, onProgress);
 }
 
