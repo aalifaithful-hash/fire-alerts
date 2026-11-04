@@ -1,6 +1,6 @@
 import * as repo from "./repo";
 import { assignmentsForProject } from "./intake";
-import { checklistDoc } from "./service";
+import { ADDRESS_MISMATCH, checklistDoc, galleryAddressCheck } from "./service";
 import { docToSlack, docToText } from "./render";
 
 /** Everything the scope screen needs for one visit. */
@@ -16,6 +16,15 @@ export async function workspacePayload(projectId: string) {
   const project = await repo.getProject(projectId);
   const locations = await repo.listLocations(projectId);
   const documents = await repo.listDocuments(projectId);
+  // Galleries stored before the address check existed get checked (once) when the project opens.
+  for (const d of documents) {
+    if (d.error?.includes(ADDRESS_MISMATCH)) continue;
+    const pages = (await repo.getPages(d.id, 1, 3)).map((p) => p.text);
+    const check = galleryAddressCheck(project.address || project.name, [d.filename.replace(/[_-]+/g, " "), ...pages]);
+    if (!check.mismatch) continue;
+    d.error = [check.mismatch, d.error].filter(Boolean).join(" ");
+    await repo.setDocumentStatus(projectId, d.id, d.status, d.error);
+  }
   const evidence = await repo.listEvidence(projectId);
   const visits = await repo.listVisits(projectId);
   const templates = await repo.listTemplates();

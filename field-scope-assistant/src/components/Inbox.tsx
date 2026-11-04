@@ -122,6 +122,8 @@ export default function Inbox() {
       <input
         className="in"
         type={type}
+        style={!form?.[k] ? { borderColor: "var(--amber, #b7791f)" } : undefined}
+        placeholder={!form?.[k] ? "not in the FNOL — enter it" : undefined}
         value={(form?.[k] as string | null) ?? ""}
         onChange={(e) => set(k, (e.target.value || null) as never)}
         aria-label={label}
@@ -202,6 +204,34 @@ export default function Inbox() {
                     ⚑ {w}
                   </div>
                 ))}
+              </div>
+            )}
+            {(res.parse.unparsed.length > 0 || res.parse.otherFields.length > 0) && (
+              <div className="card" style={{ marginTop: 10 }} aria-label="Text not matched to a field">
+                <strong>From your paste, not put in a field</strong>
+                <div className="small muted">Highlighted lines weren&apos;t read at all — copy anything you need into the fields below.</div>
+                {res.parse.otherFields.length > 0 && (
+                  <ul className="small" style={{ paddingLeft: 18, margin: "6px 0" }}>
+                    {res.parse.otherFields.map((f, i) => (
+                      <li key={i}>
+                        <strong>{f.label}:</strong> {f.value}
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                <div className="stack" style={{ gap: 4, marginTop: 6 }}>
+                  {res.parse.unparsed.map((u, i) => (
+                    <div
+                      key={i}
+                      className="small"
+                      data-unparsed={u.use}
+                      style={u.use === "unused" ? { background: "var(--amber-bg, #fff4d6)", borderLeft: "3px solid var(--amber, #b7791f)", padding: "2px 6px" } : { color: "var(--muted)", padding: "2px 6px" }}
+                    >
+                      {u.text}
+                      {u.use === "keywords" ? " · read for keywords only" : ""}
+                    </div>
+                  ))}
+                </div>
               </div>
             )}
             {res.matchedProperty && (

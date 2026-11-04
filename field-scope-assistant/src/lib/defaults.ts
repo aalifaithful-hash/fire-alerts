@@ -38,6 +38,10 @@ const WhatGoesWithIt = z.object({
     replaceBaseboard: z.boolean(), // new baseboard, LF on the same walls
     // (no "paint baseboard" option: the removed item is not repainted — the full wall is)
   }),
+  baseboardDetachReset: z.object({
+    // detaching baseboard breaks the caulk/paint line: seal/prime + paint the full continuous wall (wall SF)
+    sealPrimePaintFullWall: z.boolean(),
+  }),
   flooringReplacement: z.object({
     enabled: z.boolean(),
     fullContinuousRun: z.boolean(), // replace the whole continuous run to the natural break
@@ -218,6 +222,7 @@ export const DEFAULT_RULES: Rules = {
   },
   whatGoesWithIt: {
     baseboardRemoval: { enabled: true, sealPrimePaintFullWall: true, replaceBaseboard: true },
+    baseboardDetachReset: { sealPrimePaintFullWall: true },
     flooringReplacement: {
       enabled: true,
       fullContinuousRun: true,
@@ -274,7 +279,7 @@ export const DEFAULT_RULES: Rules = {
     removeWhenGrowth: ["carpet", "pad", "wood", "hardwood", "engineered", "laminate", "parquet", "underlayment", "drywall", "insulation", "ceiling tile"],
     containment: { enabled: true, description: "6 mil poly containment with zipper door, sealed seams and decon/entry chamber" },
     negativeAirPerContainment: 1,
-    dehumidifierPerContainment: 1,
+    dehumidifierPerContainment: 0, // mold: HEPA air scrubber / negative air by default; dehumidifier only when readings are elevated
     ppeDescription: "PPE: disposable coveralls, half/full-face respirator with P100 cartridges, gloves, eye protection",
     cleaningSteps: ["HEPA vacuum", "Wire-brush / sand remaining growth", "HEPA vacuum", "Damp-wipe"],
     antimicrobialAfterCleaning: true,

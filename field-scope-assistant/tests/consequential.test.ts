@@ -3,6 +3,7 @@ import { DEFAULT_RULES, mergeRules } from "@/lib/defaults";
 import { analyzeRoom, type RoomContext } from "@/lib/roomRules";
 import { RoomScanData, type ScopeLine } from "@/lib/scan";
 import { baseboardLF, takeoff, wallPaintSF } from "@/lib/takeoff";
+import { fixConsequentialWording } from "@/lib/render";
 
 /**
  * Regression lock for "what goes with it" (consequential work). The class of mistake:
@@ -74,6 +75,87 @@ describe("baseboard removal (reported case)", () => {
   });
 });
 
+describe("brief: Kitchen 12×10×8 baseboard detach & reset", () => {
+  const kitchen = RoomScanData.parse({
+    loss: { type: "water", category: "1" },
+    source: { status: "repaired" },
+    materials: { baseboard: { affected: true, walls: ["N", "E", "S", "W"], action: "detach_reset" } },
+    measurements: { lengthFt: 12, widthFt: 10, heightFt: 8, openings: [] },
+  });
+  const a = analyzeRoom(kitchen, ctx({ roomLabel: "Kitchen" }));
+
+  it("Detach & reset baseboard 44 LF + Seal/prime & paint the full continuous wall in wall SF (44 LF perimeter × 8 ft = 352 SF)", () => {
+    expect(line(a.lines, "baseboard")).toMatchObject({ activity: "Detach & reset", quantity: 44, unit: "LF" });
+    const wp = line(a.lines, "walls.paint")!;
+    expect(wp).toMatchObject({ activity: "Seal/prime & paint", quantity: 352, unit: "SF" });
+    expect(wp.item).toMatch(/full continuous wall/);
+    expect(wp.quantity).not.toBe(44); // never the baseboard LF
+    expect(wp.quantity).not.toBe(120); // never the floor SF
+  });
+
+  it("zero 'repaint baseboard' lines", () => {
+    expect(a.lines.filter((l) => /(re)?paint\s+(the\s+)?base\s?board/i.test(`${l.activity} ${l.item}`))).toEqual([]);
+    expect(a.lines.filter((l) => l.scopeCategory === "painting" && /baseboard/i.test(l.item))).toEqual([]);
+  });
+
+  it("with the rule switched off, no wall paint is invented", () => {
+    const rules = mergeRules({ whatGoesWithIt: { ...DEFAULT_RULES.whatGoesWithIt, baseboardDetachReset: { sealPrimePaintFullWall: false } } });
+    expect(line(analyzeRoom(kitchen, ctx({ rules })).lines, "walls.paint")).toBeUndefined();
+  });
+});
+
+describe("brief: imported 'repaint baseboard' lines translate to the full-wall rule on output", () => {
+  it.each([
+    ["Repaint baseboard — 44 LF", true],
+    ["Paint baseboards (44 LF)", true],
+    ["Paint new baseboard", true],
+    ["Touch-up paint baseboard trim", true],
+    ["Baseboard repaint: 120 SF", true],
+    ["Detach & reset baseboard — 44 LF", false],
+    ["Replace baseboard (N, E) — 22 LF", false],
+  ])("%s", (input, translated) => {
+    const out = fixConsequentialWording(input);
+    if (!translated) return expect(out).toBe(input);
+    expect(out).toMatch(/Seal\/prime & paint the full continuous wall to the natural break \(wall SF/);
+    expect(out).not.toMatch(/(re)?paint\w*\s+(new\s+)?base\s?board|\b44 LF|\b120 SF/i);
+  });
+});
+
+describe("brief: every audited rule takes its quantity from its own surface", () => {
+  const base = { source: { status: "repaired" }, measurements: MEAS };
+  it("flood cut: cut strip SF for the cut and the new drywall; full wall SF for the paint — never cut LF", () => {
+    const a = analyzeRoom(RoomScanData.parse({ ...base, loss: { type: "water", category: "2" }, materials: { walls: { material: "drywall", affectedWalls: ["N"], wetHeightIn: 10, floodCut: "auto" }, baseboard: { affected: true, walls: ["N"], action: "remove" } } }), ctx());
+    expect(line(a.lines, "floodcut")).toMatchObject({ quantity: 48, unit: "SF" }); // 12 LF × 48" (4 ft)
+    expect(line(a.lines, "drywall.replace")).toMatchObject({ quantity: 48, unit: "SF" });
+    const wp = line(a.lines, "walls.paint")!;
+    expect(wp).toMatchObject({ quantity: 96, unit: "SF" }); // N wall 12 × 8, full height
+    expect(wp.quantity).not.toBe(12);
+  });
+  it("stained ceiling: full ceiling SF, not the stained patch", () => {
+    const a = analyzeRoom(RoomScanData.parse({ ...base, loss: { type: "water", category: "1" }, materials: { ceiling: { affected: true, affectedPct: 15, action: "seal_paint" } } }), ctx());
+    expect(line(a.lines, "ceiling.paint")).toMatchObject({ quantity: 120, unit: "SF" });
+  });
+  it("flooring continuous run: replacement in floor SF of the run, baseboard reset in LF, walls painted in wall SF", () => {
+    const a = analyzeRoom(RoomScanData.parse({ ...base, loss: { type: "water", category: "1" }, materials: { flooring: { type: "LVP", affected: true, affectedPct: 25, action: "replace", continuousRun: "A" } } }), ctx({ run: [{ roomLabel: "Hall", floorSF: 40, replace: true }] }));
+    expect(line(a.lines, "floor.replace")).toMatchObject({ quantity: 120, unit: "SF" }); // full room, not the 25% patch
+    expect(line(a.lines, "floor.replace")!.calc).toMatch(/run A total 160 SF/);
+    expect(line(a.lines, "floor.baseboard.reset")).toMatchObject({ quantity: 41, unit: "LF" });
+    expect(line(a.lines, "walls.paint")).toMatchObject({ quantity: 332, unit: "SF" });
+  });
+  it("cabinets: detach → reset & reattach (LF) + reconnect (EA); never a paint line", () => {
+    const a = analyzeRoom(RoomScanData.parse({ ...base, loss: { type: "water", category: "1" }, materials: { cabinets: { affected: true, lf: 10, detach: true } } }), ctx());
+    expect(line(a.lines, "cabinets.detach")).toMatchObject({ quantity: 10, unit: "LF" });
+    expect(line(a.lines, "cabinets.reset")).toMatchObject({ activity: "Reset & reattach", quantity: 10, unit: "LF" });
+    expect(line(a.lines, "cabinets.reconnect")).toMatchObject({ unit: "EA" });
+    expect(a.lines.some((l) => l.scopeCategory === "painting")).toBe(false);
+  });
+  it("contents: pack-out / manipulation are counted per room; never repainted or replaced", () => {
+    const a = analyzeRoom(RoomScanData.parse({ ...base, loss: { type: "water", category: "1" }, contents: { present: true, affected: true, items: "furniture", handling: "packout" } }), ctx());
+    expect(line(a.lines, "contents.packout")).toMatchObject({ unit: "EA", quantity: 1 });
+    expect(a.lines.some((l) => l.kind === "contents" && /paint|replace/i.test(`${l.activity} ${l.item}`))).toBe(false);
+  });
+});
+
 describe("other consequential rules (same class)", () => {
   it("flooring replacement: baseboard detach & reset in LF on walls whose base is not replaced — never floor SF", () => {
     const s = RoomScanData.parse({
@@ -89,8 +171,11 @@ describe("other consequential rules (same class)", () => {
     expect(labelsIn(reset.item)).toEqual(["N", "S", "W"]);
     expect(reset.quantity).not.toBe(120);
     expect(line(a.lines, "floor.replace")).toMatchObject({ unit: "SF", quantity: 120 });
-    // flooring replacement alone does not paint walls; only the removed-baseboard wall is painted
-    expect(labelsIn(line(a.lines, "walls.paint")!.item)).toEqual(["E"]);
+    // every wall whose baseboard comes off is painted full-wall: E (removed) + N, S, W (detached & reset)
+    const wp = line(a.lines, "walls.paint")!;
+    expect(labelsIn(wp.item).sort()).toEqual(["E", "N", "S", "W"]);
+    expect(wp).toMatchObject({ quantity: 332, unit: "SF" }); // 44 × 8 = 352 − door 20
+    expect(wp.justification).toMatch(/N: baseboard detached & reset for the flooring/);
   });
 
   it("ceiling removal: the removed drywall is replaced (same SF) and the FULL ceiling is painted", () => {
@@ -133,7 +218,7 @@ describe("other consequential rules (same class)", () => {
 // Sweep: every combination below must satisfy the invariants.
 // ---------------------------------------------------------------------------
 const CATS = ["1", "2", "3", null] as const;
-const LOSS = ["water", "fire"] as const;
+const LOSS = ["water", "fire", "mold"] as const;
 const FLOOR = [null, "dry_in_place", "remove", "replace"] as const;
 const FTYPE = ["LVP", "carpet"] as const;
 const BB = [null, "remove", "detach_reset"] as const;
@@ -195,7 +280,12 @@ describe("invariant sweep over consequential rules", () => {
         expect(wp.quantity, where()).toBeCloseTo(expected, 1);
         const bbLF = t.walls.filter((w) => labs.includes(w.label)).reduce((s, w) => s + baseboardLF(w).lf, 0);
         expect(wp.quantity, where()).not.toBe(bbLF);
-        if (line(L, "baseboard.replace")) for (const w of ["E", "S"]) expect(labs, where()).toContain(w);
+        for (const id of ["baseboard.replace", "floor.baseboard.reset"]) {
+          const b = line(L, id);
+          if (b) for (const w of labelsIn(b.item)) expect(labs, `${id} wall ${w} not painted ${where()}`).toContain(w);
+        }
+        const bb = line(L, "baseboard");
+        if (bb && bb.activity === "Detach & reset") for (const w of labelsIn(bb.item)) expect(labs, where()).toContain(w);
         if (line(L, "drywall.replace")) for (const w of ["E", "N"]) expect(labs, where()).toContain(w);
       }
       if (line(L, "baseboard.replace") || line(L, "drywall.replace")) expect(wp, `missing full-wall paint ${where()}`).toBeDefined();
@@ -226,10 +316,11 @@ describe("invariant sweep over consequential rules", () => {
       if (reset) {
         const labs = labelsIn(reset.item);
         expect(reset.quantity).toBeCloseTo(t.walls.filter((w) => labs.includes(w.label)).reduce((s, w) => s + baseboardLF(w).lf, 0), 1);
-        if (line(L, "baseboard.replace")) for (const w of ["E", "S"]) expect(labs).not.toContain(w); // replaced, not reset
+        const replaced = line(L, "baseboard.replace");
+        if (replaced) for (const w of labelsIn(replaced.item)) expect(labs, where()).not.toContain(w); // replaced, not reset
       }
       if (line(L, "floor.replace")) expect(reset, `flooring replaced without baseboard reset ${where()}`).toBeDefined();
     }
-    expect(n).toBe(4 * 2 * 4 * 2 * 3 * 2 * 3 * 3);
+    expect(n).toBe(4 * 3 * 4 * 2 * 3 * 2 * 3 * 3);
   });
 });

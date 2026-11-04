@@ -2,6 +2,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Header from "./Header";
+import TimeField from "./TimeField";
 import SetupBanner from "./SetupBanner";
 import { api } from "./api";
 import { useStatus } from "./useStatus";
@@ -69,10 +70,10 @@ export default function ProjectList() {
                 <span>Unit</span>
                 <input className="in" value={form.unit} onChange={(e) => setForm({ ...form, unit: e.target.value })} placeholder="4D" aria-label="Unit" />
               </label>
-              <label className="field">
+              <div className="field">
                 <span>Visit time</span>
-                <input className="in" type="time" value={form.appointmentTime} onChange={(e) => setForm({ ...form, appointmentTime: e.target.value })} aria-label="Visit time" />
-              </label>
+                <TimeField label="Visit time" value={form.appointmentTime || null} onChange={(t) => setForm((f) => ({ ...f, appointmentTime: t ?? "" }))} />
+              </div>
               <label className="field">
                 <span>Customer</span>
                 <input className="in" value={form.customer} onChange={(e) => setForm({ ...form, customer: e.target.value })} aria-label="Customer" />

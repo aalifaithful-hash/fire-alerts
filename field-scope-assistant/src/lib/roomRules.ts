@@ -19,6 +19,8 @@ export interface RoomContext {
   locationId: string;
   reconstructionRequested: boolean;
   yearBuilt: number | null;
+  /** The visit's kind of work — sets the room's loss type when the PM hasn't (e.g. a mold visit → mold). */
+  visitServiceLine?: string | null;
 }
 
 export interface RoomAnalysis {
@@ -28,6 +30,8 @@ export interface RoomAnalysis {
   takeoff: Takeoff;
   airMovers: { min: number; max: number; recommended: number; calc: string } | null;
   affectedFloorSF: number | null;
+  /** Wet floor area for water-drying equipment (dehumidifier sizing). Null for mold, fire and smoke rooms. */
+  dryingSF: number | null;
   /** What can't be finalized until an outside document arrives (e.g. the mold assessment report). */
   pending: string[];
 }
@@ -64,8 +68,10 @@ export function dehuCalc(affectedSF: number, rules: Rules) {
   return { min, max, calc: `${r1(affectedSF)} SF affected ÷ ${lo}–${hi} SF per dehumidifier = ${min}–${max} × ${dehuDescription} (per drying chamber)` };
 }
 
-export function analyzeRoom(scan: RoomScanData, ctx: RoomContext): RoomAnalysis {
+export function analyzeRoom(scanIn: RoomScanData, ctx: RoomContext): RoomAnalysis {
   const R = ctx.rules;
+  const inherited = scanIn.loss.type == null && ctx.visitServiceLine === "mold";
+  const scan: RoomScanData = inherited ? { ...scanIn, loss: { ...scanIn.loss, type: "mold" } } : scanIn;
   const t = takeoff(scan.measurements);
   const mold = scan.loss.type === "mold";
   const MR = R.mold;
@@ -172,6 +178,7 @@ export function analyzeRoom(scan: RoomScanData, ctx: RoomContext): RoomAnalysis 
       const resetWalls = t.walls.filter((w) => !bbRemovedWalls.has(w.label));
       if (resetWalls.length) {
         const parts = resetWalls.map(baseboardLF);
+        if (R.whatGoesWithIt.baseboardDetachReset.sealPrimePaintFullWall) resetWalls.forEach((w) => paintWall(w.label, "baseboard detached & reset for the flooring"));
         add({ id: "floor.baseboard.reset", ruleId: "whatGoesWithIt.flooringReplacement", kind: "reconstruction", scopeCategory: "detach_reset", activity: "Detach & reset", item: `baseboard for flooring replacement (${resetWalls.map((w) => w.label).join(", ")})`, quantity: r1(parts.reduce((a, p) => a + p.lf, 0)), unit: "LF", calc: parts.map((p) => p.calc).join("; "), justification: `Baseboard comes off to replace the flooring and is reset after${bbRemovedWalls.size ? ` (walls ${[...bbRemovedWalls].join(", ")} get new baseboard instead)` : ""}. Measured in LF along the walls, not floor SF.` });
       } else if (!t.walls.length && t.floorSF) questions.push(`${room}: measure the walls — baseboard has to be detached and reset for the flooring replacement.`);
       const doors = scan.measurements.openings.filter((o) => o.kind !== "window").length;
@@ -190,6 +197,7 @@ export function analyzeRoom(scan: RoomScanData, ctx: RoomContext): RoomAnalysis 
     // Removing baseboard disturbs the wall finish along its whole length. What goes with it is new
     // baseboard (LF, same walls) and seal/prime + paint of the FULL continuous wall (wall SF) —
     // never a "paint baseboard" line, and never paint measured in baseboard LF or floor SF.
+    if (bbAction === "detach_reset" && R.whatGoesWithIt.baseboardDetachReset.sealPrimePaintFullWall) bbWallLabels.forEach((w) => paintWall(w, "baseboard detached & reset"));
     if (bbAction === "remove" && R.whatGoesWithIt.baseboardRemoval.enabled) {
       if (R.whatGoesWithIt.baseboardRemoval.replaceBaseboard)
         add({ id: "baseboard.replace", ruleId: "whatGoesWithIt.baseboardRemoval", kind: "reconstruction", scopeCategory: "replacement", activity: "Replace", item: `baseboard (${bbWallLabels.join(", ")})`, quantity: lf, unit: "LF", calc, justification: "New baseboard where it was removed (same walls, same LF). Its finish is covered by the full-wall seal/prime & paint line." });
@@ -304,6 +312,8 @@ export function analyzeRoom(scan: RoomScanData, ctx: RoomContext): RoomAnalysis 
     if (report == null || report === "none")
       questions.push(`${room}: is there a mold assessment report / protocol? NY requires one for work over ${MR.licensedThresholdSF} SF.`);
     notes.push(MR.licensingNote);
+    if (inherited) notes.push("Loss type taken from the visit (Mold remediation) — change it in step 1 if this room is different.");
+    if (!MR.dehumidifierPerContainment) notes.push("Equipment: HEPA negative air / air scrubber for the containment. Add a dehumidifier only if moisture readings are elevated.");
     notes.push(...assumed.map((a) => `Assumed: ${a}`));
     if (report !== "received")
       pending.push(
@@ -380,7 +390,7 @@ export function analyzeRoom(scan: RoomScanData, ctx: RoomContext): RoomAnalysis 
     return { ...d, rate: null, total: null, evidence: d.evidence ?? scan.moisturePoints.map((p) => p.id), status, flags };
   });
 
-  return { lines, questions, notes, takeoff: t, airMovers: am, affectedFloorSF: affFloorSF, pending };
+  return { lines, questions, notes, takeoff: t, airMovers: am, affectedFloorSF: affFloorSF, dryingSF: water ? affFloorSF : null, pending };
 }
 
 function smokeMethod(scan: RoomScanData, R: Rules): string {

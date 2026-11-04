@@ -4,7 +4,7 @@ import { fullLabel, norm, resolveLocation } from "./locations";
 import { applyGuards } from "./guards";
 import { applyOps } from "./patch";
 import { buildChunk, extractPageTexts, isPdf, MAX_CHUNK_BYTES, planBatches, SCANNED_THRESHOLD } from "./pdf";
-import { docToText, renderDoc } from "./render";
+import { docToText, fixConsequentialWording, renderDoc } from "./render";
 import * as repo from "./repo";
 import {
   CATEGORIES,
@@ -338,7 +338,7 @@ export async function commit(
 ) {
   const visit = await repo.getVisit(projectId, visitId);
   const doc = await renderVisit(projectId, visit, facts);
-  const text = manualText ?? docToText(doc);
+  const text = manualText != null ? manualText.split("\n").map(fixConsequentialWording).join("\n") : docToText(doc);
   const changes = [...version.changes];
   if (visit.manualText && manualText == null && version.trigger !== "manual_edit")
     changes.push("Your free-text edits were replaced by the updated scope (restore the previous version to get them back).");

@@ -1,6 +1,7 @@
 "use client";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import MicButton from "./MicButton";
+import TimeField from "./TimeField";
 import { useNotesAutosave } from "./useNotesAutosave";
 import Sheet from "./Sheet";
 import { api, ApiError } from "./api";
@@ -222,18 +223,18 @@ export default function ScopeTab(p: Props) {
               <span>Visit date</span>
               <input className="in" type="date" defaultValue={v.visitDate} onBlur={(e) => e.target.value !== v.visitDate && patchVisit({ visitDate: e.target.value })} />
             </label>
-            <label className="field">
+            <div className="field">
               <span>Appointment time (scheduled)</span>
-              <input className="in" type="time" defaultValue={v.appointmentTime ?? ""} onBlur={(e) => e.target.value !== (v.appointmentTime ?? "") && patchVisit({ appointmentTime: e.target.value })} />
-            </label>
-            <label className="field">
+              <TimeField label="Appointment time" value={v.appointmentTime} onChange={(t) => patchVisit({ appointmentTime: t ?? "" })} />
+            </div>
+            <div className="field">
               <span>Actual arrival</span>
-              <input className="in" type="time" defaultValue={v.arrivalTime ?? ""} onBlur={(e) => e.target.value !== (v.arrivalTime ?? "") && patchVisit({ arrivalTime: e.target.value })} />
-            </label>
-            <label className="field">
+              <TimeField label="Actual arrival" value={v.arrivalTime} onChange={(t) => patchVisit({ arrivalTime: t ?? "" })} />
+            </div>
+            <div className="field">
               <span>Actual departure</span>
-              <input className="in" type="time" defaultValue={v.departureTime ?? ""} onBlur={(e) => e.target.value !== (v.departureTime ?? "") && patchVisit({ departureTime: e.target.value })} />
-            </label>
+              <TimeField label="Actual departure" value={v.departureTime} onChange={(t) => patchVisit({ departureTime: t ?? "" })} />
+            </div>
           </div>
           <label className="field">
             <span>Access outcome (this visit only)</span>

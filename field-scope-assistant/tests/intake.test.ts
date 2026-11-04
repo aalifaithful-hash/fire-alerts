@@ -100,6 +100,18 @@ describe("paste-in FNOL inbox", () => {
     });
   });
 
+  it("a zero-parsed paste shows the unparsed text and cannot create an empty record", async () => {
+    const p = await call(parseRoute.POST as Handler<object>, "POST", {}, { text: "random words\nnothing useful" });
+    expect(p.status).toBe(200);
+    expect(p.json!.parse.fieldsFound).toBe(0);
+    expect(p.json!.parse.unparsed).toHaveLength(2);
+    expect(p.json!.input).toMatchObject({ address: "", claimNumber: null, insured: null, serviceLines: [] });
+    const s = await call(assignmentsRoute.POST as Handler<object>, "POST", {}, { rawText: "random words", input: p.json!.input });
+    expect(s.status).toBe(400);
+    expect(await intake.listAssignments()).toHaveLength(0);
+    expect(await intake.listProperties()).toHaveLength(0);
+  });
+
   it("refuses to save without an address or service line (nothing guessed)", async () => {
     const p = await call(parseRoute.POST as Handler<object>, "POST", {}, { text: S.FNOL_AMBIGUOUS });
     const r = await call(assignmentsRoute.POST as Handler<object>, "POST", {}, { rawText: S.FNOL_AMBIGUOUS, input: p.json!.input });

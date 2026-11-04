@@ -47,7 +47,6 @@ const MOLD_SEQUENCE = [
   "mold.underlayment.remove",
   "mold.subfloor.clean",
   "mold.antimicrobial",
-  "mold.dehu",
   "mold.dispose",
   "mold.finalclean",
   "mold.pcv",

@@ -55,6 +55,12 @@ export interface FnolParse {
   lossType: Found<string> | null;
   causeOfLoss: Found<string> | null;
   receivedAt: Found<string> | null; // ISO, when stated in the FNOL
+  /** Generic fallback: "Key: value" lines whose key isn't a known field (kept for review, saved with the raw text). */
+  otherFields: { label: string; value: string }[];
+  /** Lines that fed no field. "keywords" = read only for service-line/stage/loss cues; "unused" = not read at all. */
+  unparsed: { text: string; use: "keywords" | "unused" }[];
+  /** How many fields were filled from the paste (0 → nothing recognized; nothing is saved from it). */
+  fieldsFound: number;
   warnings: string[];
 }
 
@@ -410,7 +416,37 @@ export function parseFnol(rawText: string, rules: Rules = DEFAULT_RULES): FnolPa
     }
   }
 
+  // ---------- what was not read (shown highlighted on the review screen) ----------
+  const otherFields: FnolParse["otherFields"] = [];
+  const unparsed: FnolParse["unparsed"] = [];
+  const usedEvidence = new Set(
+    [program, claimNumber, assignmentNumber, policyNumber, carrier, insured, contactPhone, email, address, unit, dolRaw, typeOfLoss, causeOfLoss, recRaw, typeField, stageField, specialField]
+      .filter((f): f is Found<string> => !!f)
+      .map((f) => f.evidence),
+  );
+  const cue = [...k.ems, ...k.mitigation, ...k.mold, ...k.reconstruction, ...k.contents, ...k.contentsOnly, ...k.special, ...k.initial, ...k.final, ...k.monitoring, ...k.kickoff];
+  for (const raw of text.split("\n")) {
+    const line = LINE(raw);
+    if (!line || /^[-=_*~]{3,}$/.test(line)) continue;
+    if (usedEvidence.has(line) || LABEL_LINE_RE.test(line.replace(/^[\s>*•\-–—]+/, ""))) continue;
+    if (address && line.includes(address.value)) continue;
+    if (contactPhone && line.includes(contactPhone.value) && line.length < 40) continue;
+    if (email && line.includes(email.value) && line.length < 60) continue;
+    const kv = line.match(/^([A-Za-z][A-Za-z0-9 #/&().'’-]{0,40}?)\s*[:=]\s*(\S.*)$/);
+    if (kv && !/^https?$/i.test(kv[1])) {
+      otherFields.push({ label: kv[1].trim(), value: kv[2].trim() });
+      continue;
+    }
+    unparsed.push({ text: line, use: keyword(line, cue) || LOSS_TYPES.some(([, re]) => re.test(line)) ? "keywords" : "unused" });
+  }
+  const fieldsFound = [program, claimNumber, assignmentNumber, policyNumber, carrier, insured, contactPhone, email, address, unit, lossDate, lossType, causeOfLoss, receivedAt].filter(Boolean).length + (lineHits.length ? 1 : 0);
+  if (!fieldsFound) warnings.unshift("Nothing in this text matched an FNOL field — check that you pasted the FNOL. Nothing will be saved from it as is.");
+  else if (unparsed.some((u) => u.use === "unused")) warnings.push(`${unparsed.filter((u) => u.use === "unused").length} line(s) were not matched to any field — they are highlighted below; copy anything you need into the fields.`);
+
   return {
+    otherFields,
+    unparsed,
+    fieldsFound,
     serviceLines: dedupeLines(lineHits),
     contentsOnly,
     stage,

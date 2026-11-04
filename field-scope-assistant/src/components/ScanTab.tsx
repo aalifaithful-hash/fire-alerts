@@ -60,6 +60,10 @@ export default function ScanTab({ ws, projectId, visitId, reload, flash }: Props
     void load();
   }, [load]);
 
+  // No dead end: with one scanned room (e.g. right after Quick start), open it so its proposed lines show.
+  useEffect(() => {
+    if (!sel && view?.rooms.length === 1) setSel(view.rooms[0].locationId);
+  }, [view, sel]);
   const room = view?.rooms.find((r) => r.locationId === sel) ?? null;
   useEffect(() => {
     if (!sel) return;
@@ -398,9 +402,14 @@ export default function ScanTab({ ws, projectId, visitId, reload, flash }: Props
           <h2>Summary and checks</h2>
           <div className="card small stack">
             <div>
-              <strong>Equipment (calculated, not installed):</strong> air movers {view.summary.airMoversRecommended || "—"}
-              {view.summary.dehumidifiers ? ` · dehumidifiers ${view.summary.dehumidifiers.min}–${view.summary.dehumidifiers.max}` : ""}
-              {view.summary.scrubbers ? ` · air scrubbers ${view.summary.scrubbers}` : ""}
+              <strong>Equipment (calculated, not installed):</strong>{" "}
+              {[
+                view.summary.airMoversRecommended ? `air movers ${view.summary.airMoversRecommended}` : null,
+                view.summary.dehumidifiers ? `dehumidifiers ${view.summary.dehumidifiers.min}–${view.summary.dehumidifiers.max}` : null,
+                view.summary.scrubbers ? `HEPA air scrubbers / negative air ${view.summary.scrubbers}` : null,
+              ]
+                .filter(Boolean)
+                .join(" · ") || "none yet"}
             </div>
             {view.summary.airMoverCalcs.map((c, i) => (
               <div key={i} className="muted">

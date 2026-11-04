@@ -467,9 +467,23 @@ function renderChecklist(input: RenderInput, baseType: VisitType): ScopeDoc {
 }
 
 export function renderDoc(input: RenderInput, checklistFor?: VisitType): ScopeDoc {
-  const doc = renderDocInner(input, checklistFor);
+  const doc0 = renderDocInner(input, checklistFor);
   const ex = exclusionSection(input.facts, input.locations);
-  return ex.length ? { ...doc, sections: [...doc.sections, ...ex] } : doc;
+  const doc = ex.length ? { ...doc0, sections: [...doc0.sections, ...ex] } : doc0;
+  return { ...doc, sections: doc.sections.map((sec) => ({ ...sec, bullets: sec.bullets.map((b) => ({ ...b, text: fixConsequentialWording(b.text) })) })) };
+}
+
+const FULL_WALL = "Seal/prime & paint the full continuous wall to the natural break (wall SF: corner to corner × ceiling height, openings deducted)";
+/**
+ * Lines written elsewhere (AI drafts, pasted or typed scopes, older versions) can still say
+ * "repaint baseboard". The correct consequential work is the full continuous wall in wall SF,
+ * so the output translates it — and drops a quantity given in the wrong unit (LF of baseboard,
+ * SF of flooring) rather than carrying it onto the wall.
+ */
+export function fixConsequentialWording(text: string): string {
+  const re = /\b(?:re-?paint(?:ing)?|paint(?:ing)?|touch[- ]?up(?: paint)?)\s+(?:the\s+|new\s+|all\s+)*base\s?boards?(?:\s+trim)?\b(?:\s*(?:[—–:-]|\()\s*[\d.,]+\s*(?:LF|SF|lin(?:ear)?\.?\s*f(?:ee)?t|sq\.?\s*f(?:ee)?t)\.?\)?)?|\bbase\s?boards?\s+(?:re-?paint|paint(?:ing)?)\b(?:\s*(?:[—–:-]|\()\s*[\d.,]+\s*(?:LF|SF)\)?)?/gi;
+  if (!re.test(text)) return text;
+  return text.replace(re, FULL_WALL);
 }
 
 function renderDocInner(input: RenderInput, checklistFor?: VisitType): ScopeDoc {

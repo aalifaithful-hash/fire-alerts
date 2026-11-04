@@ -41,3 +41,33 @@ export function formatTimestampNY(iso: string): string {
     minute: "2-digit",
   }).format(new Date(iso));
 }
+
+/**
+ * Forgiving time entry for phones: "11", "1100", "11:00", "11a", "11 am", "3p", "3:30pm", "15:30", "noon".
+ * Returns 24h "HH:MM" or null if it can't tell. Without am/pm, 7–11 → AM and 12–6 → PM
+ * (field appointment hours); a 24h hour (13–23, or a leading 0) is taken as written.
+ */
+export function parseTimeInput(raw: string): string | null {
+  const t = raw.trim().toLowerCase().replace(/\./g, "");
+  if (!t) return null;
+  if (t === "noon") return "12:00";
+  if (t === "midnight") return "00:00";
+  const m = t.match(/^(\d{1,2})(?:[:h ]?(\d{2}))?\s*(a|am|p|pm)?$/);
+  if (!m) return null;
+  let h = Number(m[1]);
+  const min = m[2] != null ? Number(m[2]) : 0;
+  if (min > 59 || h > 23) return null;
+  const ap = m[3]?.[0];
+  if (ap) {
+    if (h < 1 || h > 12) return null;
+    h = (h % 12) + (ap === "p" ? 12 : 0);
+  } else if (!(m[1].length === 2 && m[1].startsWith("0")) && h >= 1 && h <= 6) h += 12;
+  return `${String(h).padStart(2, "0")}:${String(min).padStart(2, "0")}`;
+}
+
+/** "13:05" → "1:05 PM". */
+export function formatTime12(hhmm: string | null | undefined): string {
+  if (!hhmm) return "";
+  const [h, m] = hhmm.split(":").map(Number);
+  return `${((h + 11) % 12) + 1}:${String(m).padStart(2, "0")} ${h < 12 ? "AM" : "PM"}`;
+}

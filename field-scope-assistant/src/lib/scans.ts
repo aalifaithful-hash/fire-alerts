@@ -76,7 +76,7 @@ export interface VisitScanView {
   sketchSvg: string;
 }
 
-function analyzeAll(recs: RoomScanRec[], locations: Location[], facts: VisitFacts, rules: Rules, yearBuilt: number | null) {
+function analyzeAll(recs: RoomScanRec[], locations: Location[], facts: VisitFacts, rules: Rules, yearBuilt: number | null, visitServiceLine: string | null = null) {
   const label = (id: string) => {
     const l = locations.find((x) => x.id === id);
     return l ? fullLabel(l) : "Room";
@@ -101,6 +101,7 @@ function analyzeAll(recs: RoomScanRec[], locations: Location[], facts: VisitFact
       locationId: rec.locationId,
       reconstructionRequested: facts.reconstructionRequested,
       yearBuilt,
+      visitServiceLine,
     });
     return { rec, analysis };
   });
@@ -142,7 +143,7 @@ async function persistAndSync(projectId: string, visitId: string, change: string
     getRules(),
     yearBuiltFor(projectId),
   ]);
-  const analyzed = analyzeAll(recs, locations, visit.facts, rules, yearBuilt);
+  const analyzed = analyzeAll(recs, locations, visit.facts, rules, yearBuilt, visit.serviceLine);
   for (const { rec, analysis } of analyzed) await writeScan(projectId, visitId, rec.locationId, { ...rec.data, lines: analysis.lines });
   const facts = syncedFacts(visit.facts, analyzed);
   const before = JSON.stringify(visit.facts.items.filter((i) => i.id.startsWith("ln")).map((i) => i.text));
@@ -159,7 +160,7 @@ export async function getVisitScans(projectId: string, visitId: string): Promise
     getRules(),
     yearBuiltFor(projectId),
   ]);
-  const analyzed = analyzeAll(recs, locations, visit.facts, rules, yearBuilt);
+  const analyzed = analyzeAll(recs, locations, visit.facts, rules, yearBuilt, visit.serviceLine);
   const roomsOut = new Set(visit.facts.exclusions.filter((e) => e.target === "room").map((e) => e.locationId));
   const loc = (id: string) => locations.find((l) => l.id === id);
 
@@ -176,8 +177,8 @@ export async function getVisitScans(projectId: string, visitId: string): Promise
       am += analysis.airMovers.recommended;
       amCalcs.push(`${fullLabel(loc(rec.locationId) ?? { floor: null, unit: null, room: "Room" })}: ${analysis.airMovers.calc}`);
     }
-    affected += analysis.affectedFloorSF ?? 0;
-    scrubbers += analysis.lines.filter((l) => l.id === "equip.scrubber" && l.status !== "rejected" && l.status !== "excluded").reduce((a, l) => a + (l.quantity ?? 0), 0);
+    affected += analysis.dryingSF ?? 0; // dehumidifier sizing counts wet (water) rooms only — never mold/fire rooms
+    scrubbers += analysis.lines.filter((l) => (l.id === "equip.scrubber" || l.id === "mold.negair") && l.status !== "rejected" && l.status !== "excluded").reduce((a, l) => a + (l.quantity ?? 0), 0);
     questions.push(...analysis.questions);
     notes.push(...analysis.notes);
     if (!visit.facts.reconstructionRequested) pending.push(...analysis.lines.filter((l) => l.kind === "reconstruction" && l.status !== "rejected" && l.status !== "excluded"));
@@ -247,7 +248,7 @@ export async function exportAppendix(projectId: string, visitId: string) {
     getRules(),
     yearBuiltFor(projectId),
   ]);
-  const analyzed = analyzeAll(recs, locations, visit.facts, rules, yearBuilt);
+  const analyzed = analyzeAll(recs, locations, visit.facts, rules, yearBuilt, visit.serviceLine);
   const roomsOut = new Set(visit.facts.exclusions.filter((e) => e.target === "room").map((e) => e.locationId));
   const rowsOut: { room: string; activity: string; item: string; quantity: string; unit: string; rate: string; total: string; notes: string }[] = [];
   for (const { rec, analysis } of analyzed) {

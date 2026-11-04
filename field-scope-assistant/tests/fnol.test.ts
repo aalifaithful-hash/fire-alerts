@@ -139,3 +139,29 @@ describe("FNOL paste layouts (normalizeFnolText)", () => {
     }
   });
 });
+
+describe("brief: unparsed text and generic key/value fallback", () => {
+  it("EMS FNOL still fills every field; extra lines are surfaced, unknown labels kept as other fields", () => {
+    const p = parseFnol(`${S.FNOL_EMS}\nAdjuster: Pat Example\nGate code 4411, ring super\nCall before arriving`);
+    expect(p.claimNumber?.value).toBe("WTR-2026-118842");
+    expect(p.address?.value).toBe("429 E 52nd St, Apt 5C, New York, NY 10022");
+    expect(p.otherFields).toEqual([{ label: "Adjuster", value: "Pat Example" }]);
+    expect(p.unparsed.filter((u) => u.use === "unused").map((u) => u.text)).toEqual(["Gate code 4411, ring super", "Call before arriving"]);
+    expect(p.unparsed.find((u) => u.text === "NEW LOSS - EMS")?.use).toBe("keywords");
+    expect(p.warnings.join(" ")).toMatch(/2 line\(s\) were not matched/);
+  });
+
+  it("a paste with nothing recognizable is surfaced line by line, never turned into fields", () => {
+    const p = parseFnol("hello there\nsee you at the meeting");
+    expect(p.fieldsFound).toBe(0);
+    expect(p.warnings[0]).toMatch(/Nothing in this text matched an FNOL field/);
+    expect(p.unparsed.map((u) => [u.text, u.use])).toEqual([["hello there", "unused"], ["see you at the meeting", "unused"]]);
+    expect(p.address).toBeNull();
+  });
+
+  it("mold is a kind of work: a mold FNOL gets the mold service line and the mold scope format", () => {
+    const p = parseFnol(S.FNOL_EMS.replace("Assignment Type: Emergency Services (water out, extraction, drying)", "Assignment Type: Mold remediation"));
+    expect(p.serviceLines.map((l) => l.value)).toContain("mold");
+    expect(outputTypeFor(["mold"], "initial_walkthrough", false)).toBe("mold_remediation");
+  });
+});

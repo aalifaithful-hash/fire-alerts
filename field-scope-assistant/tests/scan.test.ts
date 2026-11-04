@@ -59,8 +59,9 @@ describe("room analysis: quantities with the math shown", () => {
     expect(fc.calc).toContain('wet 6" + 24" margin = 30" → 48" (sheet stop)');
     expect(line(a, "insulation.remove")?.quantity).toBe(76);
     expect(line(a, "baseboard")).toMatchObject({ activity: "Remove", quantity: 19, unit: "LF" });
-    // paint full continuous wall: E 10×8 = 80, S 12×8 = 96 − door 3×6.67 = 20 → 76; total 156
-    expect(line(a, "walls.paint")).toMatchObject({ quantity: 156, kind: "reconstruction" });
+    // paint full continuous wall, every wall whose baseboard comes off: E, S (removed) + N, W (detached & reset
+    // for the LVP replacement): N 96 + W 80 + E 80 + S (96 − door 20) 76 = 332 SF
+    expect(line(a, "walls.paint")).toMatchObject({ quantity: 332, unit: "SF", kind: "reconstruction" });
     // antimicrobial: 60 SF floor + wet strip 19 LF × 0.5 ft = 9.5 → 69.5
     expect(line(a, "antimicrobial")?.quantity).toBe(69.5);
     expect(line(a, "equip.airmovers")).toMatchObject({ quantity: 1, kind: "equipment" });

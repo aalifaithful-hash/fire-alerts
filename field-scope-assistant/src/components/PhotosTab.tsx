@@ -156,7 +156,13 @@ export default function PhotosTab({ ws, projectId, reload, flash, openEvidence, 
                 <div style={{ width: `${pct}%`, background: pr.failed ? "var(--amber)" : undefined }} />
               </div>
             )}
-            {d.error && <div className="small" style={{ color: "var(--amber)" }}>⚑ {d.error}</div>}
+            {d.error?.includes("Address mismatch:") ? (
+              <div className="card danger small" role="alert" style={{ marginTop: 6 }}>
+                <strong>Wrong gallery?</strong> {d.error}
+              </div>
+            ) : (
+              d.error && <div className="small" style={{ color: "var(--amber)" }}>⚑ {d.error}</div>
+            )}
             {pr.errors.length > 0 && (
               <details className="small">
                 <summary>Errors</summary>
