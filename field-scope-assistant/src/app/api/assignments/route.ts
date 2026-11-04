@@ -1,5 +1,5 @@
 import { body, route } from "@/lib/http";
-import { createAssignmentFromFnol, listAssignments, listProperties, type AssignmentInput } from "@/lib/intake";
+import { createAssignmentFromFnol, listAssignments, listProperties, openProjectForAssignment, type AssignmentInput } from "@/lib/intake";
 
 export const GET = route(async () => {
   const [assignments, properties] = await Promise.all([listAssignments(), listProperties()]);
@@ -8,6 +8,11 @@ export const GET = route(async () => {
 });
 
 export const POST = route(async (req) => {
-  const b = await body<{ rawText?: string; input: AssignmentInput }>(req);
-  return createAssignmentFromFnol(String(b.rawText ?? ""), b.input);
+  // Save = property (found or created) + assignment + its first visit, in one step.
+  // openVisit:false keeps the older two-step behavior (assignment only).
+  const b = await body<{ rawText?: string; input: AssignmentInput; openVisit?: boolean }>(req);
+  const saved = await createAssignmentFromFnol(String(b.rawText ?? ""), b.input);
+  if (b.openVisit === false) return { ...saved, projectId: null, visitId: null };
+  const opened = await openProjectForAssignment(saved.assignment.id);
+  return { ...saved, assignment: { ...saved.assignment, status: "linked" as const, projectId: opened.projectId }, ...opened };
 });

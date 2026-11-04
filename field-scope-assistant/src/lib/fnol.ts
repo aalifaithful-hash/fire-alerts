@@ -59,6 +59,117 @@ export interface FnolParse {
 
 const LINE = (s: string) => s.replace(/\s+/g, " ").trim();
 
+/** Every field label the parser reads (regex fragments, case-insensitive). Also used to normalize layouts. */
+const LABELS = {
+  serviceType: ["assignment type", "service type", "job type", "type of service", "services? requested", "scope", "service"],
+  stage: ["visit type", "visit", "stage", "appointment type", "inspection type", "request"],
+  special: ["special instructions", "special assignment", "special handling", "special"],
+  program: ["program", "tpa", "national account", "referral source"],
+  claim: ["claim", "claim number", "claim no", "claim id"],
+  assignment: ["assignment", "job", "file", "work order", "wo", "job number", "file number", "reference", "ref"],
+  policy: ["policy", "policy number", "policy no"],
+  carrier: ["carrier", "insurance company", "insurance carrier", "insurer", "insurance"],
+  insured: ["insured", "insured name", "customer", "customer name", "policyholder", "homeowner", "owner", "contact", "contact name", "tenant"],
+  phone: ["phone", "cell", "mobile", "contact phone", "insured phone", "tel"],
+  email: ["email", "e-mail"],
+  address: ["loss location", "loss address", "property address", "property", "address", "location", "site address", "risk address"],
+  unit: ["unit", "apt", "apartment", "suite"],
+  lossDate: ["date of loss", "loss date", "dol", "date loss occurred", "loss occurred"],
+  lossType: ["type of loss", "loss type", "peril", "cause type"],
+  cause: ["cause of loss", "cause", "loss description", "description of loss", "description", "notes", "details"],
+  received: ["received", "date received", "assigned", "date assigned", "assignment date", "sent"],
+} as const;
+const ALL_LABELS = [...new Set(Object.values(LABELS).flat())].sort((a, b) => b.length - a.length);
+const LABEL_ALT = ALL_LABELS.join("|");
+const SUFFIX = "(?:\\s*(?:#|no\\.?|number))?";
+/** A known label at the very start of a line, followed by ":" (or "-", "=") — i.e. a "Label: value" line. */
+const LABEL_LINE_RE = new RegExp(`^(?:${LABEL_ALT})${SUFFIX}\\s*[:\\-–=]`, "i");
+/** A known label alone on its line (value on the next line). */
+const LABEL_ALONE_RE = new RegExp(`^(${LABEL_ALT})${SUFFIX}\\s*:?\\s*$`, "i");
+/** A known label + colon anywhere in a line (for splitting several fields that share a line). */
+const LABEL_ANYWHERE_RE = new RegExp(`(^|[\\s|•;,])((?:${LABEL_ALT})${SUFFIX}\\s*:)`, "gi");
+const CITY_STATE_ZIP_RE = /^[A-Za-z][A-Za-z .'-]*,?\s+[A-Z]{2}\.?\s+\d{5}(?:-\d{4})?\s*$/;
+
+/**
+ * Brings the layouts FNOLs are pasted in (Slack bold labels, label on its own
+ * line, tab- or pipe-separated tables, several fields on one line, a one-line
+ * Slack paste, an address split over two lines) into plain "Label: value" lines.
+ * It only re-arranges text; it never adds or invents values.
+ */
+export function normalizeFnolText(text: string): string {
+  const t = text.replace(/\r\n?/g, "\n").replace(/[\u00a0\u2007\u202f]/g, " ").replace(/：/g, ":").replace(/[\u200b\ufeff]/g, "");
+  let lines = t.split("\n").map((raw) => {
+    let l = raw.replace(/^\s*[>•·▪◦]+\s*/, "").replace(/^\s*[-–—]\s+/, "");
+    // Slack / markdown emphasis around a label: *Claim #:* X, *Claim #*: X, **Claim:** X, _Claim_: X
+    l = l.replace(/^(\s*)(\*{1,2}|_{1,2})([^*_\n:]{1,60}?)\s*(:?)\s*\2\s*(:?)/, (m, sp, _mk, lab, c1, c2) => (c1 || c2 ? `${sp}${lab}:` : m));
+    // pipe table row: | Label | Value |  (markdown separator rows are dropped)
+    if (/^\s*\|/.test(l)) {
+      if (/^\s*\|?[\s:|-]+\|?\s*$/.test(l)) return "";
+      const cells = l.split("|").map((c) => c.trim()).filter(Boolean);
+      return pairCells(cells) ?? cells.join(" ");
+    }
+    if (l.includes("\t")) {
+      const cells = l.split("\t").map((c) => c.trim()).filter(Boolean);
+      return pairCells(cells) ?? cells.join("  ");
+    }
+    return l;
+  });
+  // several "Label:" fields on one line → one per line. Split when they're separated by 2+ spaces,
+  // a pipe/bullet/semicolon, or when the line carries 3+ labels (a one-line Slack paste).
+  lines = lines.flatMap((l) => {
+    const hits = [...l.matchAll(LABEL_ANYWHERE_RE)].filter((m) => m.index! > 0 || m[1] !== "");
+    if (!hits.length) return [l];
+    const many = hits.length >= 2 && [...l.matchAll(LABEL_ANYWHERE_RE)].length >= 3;
+    return l
+      .replace(LABEL_ANYWHERE_RE, (m, sep: string, lab: string, off: number) => {
+        if (off === 0 && sep === "") return m;
+        const before = l.slice(0, off + sep.length);
+        const spaced = /(\s{2,}|[|•;]\s*)$/.test(before);
+        return spaced || many ? `\n${lab}` : m;
+      })
+      .split("\n")
+      .map((x) => x.replace(/[\s|•;,]+$/, ""));
+  });
+  // label alone on a line → join with the next non-empty line (unless that line is itself a label)
+  const out: string[] = [];
+  for (let i = 0; i < lines.length; i++) {
+    const l = lines[i].trim();
+    const alone = l.match(LABEL_ALONE_RE);
+    if (alone) {
+      let j = i + 1;
+      while (j < lines.length && !lines[j].trim()) j++;
+      const next = lines[j]?.trim();
+      if (next && !LABEL_LINE_RE.test(next) && !LABEL_ALONE_RE.test(next)) {
+        out.push(`${l.replace(/\s*:?\s*$/, "")}: ${next}`);
+        i = j;
+        continue;
+      }
+    }
+    out.push(lines[i]);
+  }
+  // address continued on the next line ("City, ST 12345")
+  const addrRe = new RegExp(`^(?:${LABELS.address.join("|")})\\s*[:\\-–=]`, "i");
+  for (let i = 0; i < out.length - 1; i++) {
+    if (addrRe.test(out[i].trim()) && !/\b\d{5}\b/.test(out[i]) && CITY_STATE_ZIP_RE.test(out[i + 1].trim())) {
+      out[i] = `${out[i].trim()}, ${out[i + 1].trim()}`;
+      out.splice(i + 1, 1);
+    }
+  }
+  return out.join("\n");
+}
+
+/** [Label, Value, Label, Value…] → "Label: Value" lines when every odd cell is a known label. */
+function pairCells(cells: string[]): string | null {
+  if (cells.length < 2 || cells.length % 2) return null;
+  const pairs: string[] = [];
+  for (let i = 0; i < cells.length; i += 2) {
+    const lab = cells[i].replace(/\s*:\s*$/, "");
+    if (!LABEL_ALONE_RE.test(lab)) return null;
+    pairs.push(`${lab}: ${cells[i + 1]}`);
+  }
+  return pairs.join("\n");
+}
+
 /** "Label: value" lookup over lines. Labels are matched case-insensitively at line start (bullets allowed). */
 function labeled(text: string, labels: string[], max = 160): Found<string> | null {
   const lines = text.split(/\r?\n/);
@@ -139,13 +250,14 @@ const LOSS_TYPES: [string, RegExp][] = [
   ["water", /\b(water|leak|pipe|burst|overflow|flood|supply line|dishwasher|washing machine|toilet|sprinkler)\b/i],
 ];
 
-export function parseFnol(text: string, rules: Rules = DEFAULT_RULES): FnolParse {
+export function parseFnol(rawText: string, rules: Rules = DEFAULT_RULES): FnolParse {
+  const text = normalizeFnolText(rawText);
   const k = rules.fnolKeywords;
   const warnings: string[] = [];
 
   // --- service lines (multi) ---
   const lineHits: Found<ServiceLine>[] = [];
-  const typeField = labeled(text, ["assignment type", "service type", "job type", "type of service", "services? requested", "scope", "service"]);
+  const typeField = labeled(text, [...LABELS.serviceType]);
   const hay = text;
   const add = (line: ServiceLine, words: string[]) => {
     const fromField = typeField ? keyword(typeField.value, words) : null;
@@ -169,7 +281,7 @@ export function parseFnol(text: string, rules: Rules = DEFAULT_RULES): FnolParse
   if (!lineHits.length) warnings.push("Service line not found — choose EMS, mitigation, reconstruction or contents.");
 
   // --- visit stage ---
-  const stageField = labeled(text, ["visit type", "visit", "stage", "appointment type", "inspection type", "request"]);
+  const stageField = labeled(text, [...LABELS.stage]);
   const stageWords: [VisitStage, string[]][] = [
     ["final_walkthrough", k.final],
     ["daily_monitoring", k.monitoring],
@@ -197,7 +309,7 @@ export function parseFnol(text: string, rules: Rules = DEFAULT_RULES): FnolParse
   }
 
   // --- special assignment ---
-  const specialField = labeled(text, ["special instructions", "special assignment", "special handling", "special"]);
+  const specialField = labeled(text, [...LABELS.special]);
   const specialHit = keyword(hay, k.special);
   const special: Found<boolean> | null = specialField
     ? { value: true, confidence: "labeled", evidence: specialField.evidence }
@@ -207,7 +319,7 @@ export function parseFnol(text: string, rules: Rules = DEFAULT_RULES): FnolParse
   const specialReason = specialField?.value ?? (specialHit ? specialHit.word : null);
 
   // --- program / TPA ---
-  let program = labeled(text, ["program", "tpa", "national account", "referral source"]);
+  let program = labeled(text, [...LABELS.program]);
   if (!program)
     for (const p of rules.programs) {
       const h = p.keywords.length ? keyword(hay, p.keywords) : null;
@@ -220,25 +332,25 @@ export function parseFnol(text: string, rules: Rules = DEFAULT_RULES): FnolParse
   // --- identifiers & contact (number fields must contain a digit) ---
   const num = (f: Found<string> | null) => (f && /\d/.test(f.value) ? { ...f, value: f.value.split(/\s+/)[0].replace(/[,;.]$/, "") } : null);
   const claimNumber =
-    num(labeled(text, ["claim", "claim number", "claim no", "claim id"], 40)) ?? inline(text, /\bclaim\s*(?:#|no\.?|number)\s*[:-]?\s*([A-Z0-9][A-Z0-9-]{4,})/i);
+    num(labeled(text, [...LABELS.claim], 40)) ?? inline(text, /\bclaim\s*(?:#|no\.?|number)\s*[:-]?\s*([A-Z0-9][A-Z0-9-]{4,})/i);
   const assignmentNumber =
-    num(labeled(text, ["assignment", "job", "file", "work order", "wo", "job number", "file number", "reference", "ref"], 40)) ??
+    num(labeled(text, [...LABELS.assignment], 40)) ??
     inline(text, /\b(?:job|assignment|file|wo|work order)\s*(?:#|no\.?|number)\s*[:-]?\s*([A-Z0-9][A-Z0-9-]{3,})/i);
   if (assignmentNumber && claimNumber && assignmentNumber.value === claimNumber.value) assignmentNumber.confidence = "keyword";
-  const policyNumber = num(labeled(text, ["policy", "policy number", "policy no"], 40));
-  const carrier = labeled(text, ["carrier", "insurance company", "insurance carrier", "insurer", "insurance"]);
-  const insured = labeled(text, ["insured", "insured name", "customer", "customer name", "policyholder", "homeowner", "owner", "contact", "contact name", "tenant"]);
+  const policyNumber = num(labeled(text, [...LABELS.policy], 40));
+  const carrier = labeled(text, [...LABELS.carrier]);
+  const insured = labeled(text, [...LABELS.insured]);
   const phone =
-    labeled(text, ["phone", "cell", "mobile", "contact phone", "insured phone", "tel"], 40) ??
+    labeled(text, [...LABELS.phone], 40) ??
     inline(text, /(\(?\b\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}\b)/);
   const contactPhone = phone ? { ...phone, value: (phone.value.match(/\(?\d{3}\)?[\s.-]?\d{3}[\s.-]?\d{4}/)?.[0] ?? phone.value).trim() } : null;
   const email = inline(text, /([A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,})/i);
 
   // --- address / unit ---
   const address =
-    labeled(text, ["loss location", "loss address", "property address", "property", "address", "location", "site address", "risk address"]) ??
+    labeled(text, [...LABELS.address]) ??
     streetLine(text);
-  let unit = labeled(text, ["unit", "apt", "apartment", "suite"], 20);
+  let unit = labeled(text, [...LABELS.unit], 20);
   if (address) {
     const um = address.value.match(/(?:,?\s*)(?:apt\.?|apartment|unit|suite|ste\.?|#)\s*([0-9A-Z-]{1,8})\b/i);
     if (um && !unit) unit = { value: um[1], confidence: address.confidence, evidence: address.evidence };
@@ -246,12 +358,12 @@ export function parseFnol(text: string, rules: Rules = DEFAULT_RULES): FnolParse
   if (!address) warnings.push("Property address not found.");
 
   // --- dates / loss ---
-  const dolRaw = labeled(text, ["date of loss", "loss date", "dol", "date loss occurred", "loss occurred"], 40);
+  const dolRaw = labeled(text, [...LABELS.lossDate], 40);
   const lossDateVal = dolRaw ? normalizeDate(dolRaw.value) : null;
   const lossDate = dolRaw && lossDateVal ? { ...dolRaw, value: lossDateVal } : null;
   if (dolRaw && !lossDateVal) warnings.push(`Loss date "${dolRaw.value}" could not be read — enter it.`);
 
-  const typeOfLoss = labeled(text, ["type of loss", "loss type", "peril", "cause type"], 60);
+  const typeOfLoss = labeled(text, [...LABELS.lossType], 60);
   let lossType: Found<string> | null = null;
   const lossHay = typeOfLoss?.value ?? text;
   for (const [name, re] of LOSS_TYPES)
@@ -259,9 +371,14 @@ export function parseFnol(text: string, rules: Rules = DEFAULT_RULES): FnolParse
       lossType = { value: name, confidence: typeOfLoss ? "labeled" : "keyword", evidence: typeOfLoss?.evidence ?? (lossHay.match(re)?.[0] ?? name) };
       break;
     }
-  const causeOfLoss = labeled(text, ["cause of loss", "cause", "loss description", "description of loss", "description", "notes", "details"], 400);
+  let causeOfLoss = labeled(text, [...LABELS.cause], 400);
+  // "Type of Loss: Water - supply line burst under kitchen sink" carries the cause after the peril word.
+  if (!causeOfLoss && typeOfLoss) {
+    const rest = typeOfLoss.value.replace(/^[A-Za-z /&]+?\s*[-–—:,(]\s*/, "").replace(/\)\s*$/, "").trim();
+    if (rest && rest !== typeOfLoss.value && rest.split(/\s+/).length >= 2) causeOfLoss = { value: rest, confidence: "keyword", evidence: typeOfLoss.evidence };
+  }
 
-  const recRaw = labeled(text, ["received", "date received", "assigned", "date assigned", "assignment date", "sent"], 60);
+  const recRaw = labeled(text, [...LABELS.received], 60);
   let receivedAt: Found<string> | null = null;
   if (recRaw) {
     const d = normalizeDate(recRaw.value);

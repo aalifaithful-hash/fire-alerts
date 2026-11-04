@@ -1,5 +1,5 @@
 "use client";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Header from "./Header";
 import { api } from "./api";
@@ -23,41 +23,62 @@ export default function Inbox() {
   const [text, setText] = useState("");
   const [res, setRes] = useState<ParseResult | null>(null);
   const [form, setForm] = useState<AssignmentInput | null>(null);
-  const [saved, setSaved] = useState<{ assignment: Assignment; property: Property; propertyCreated: boolean } | null>(null);
+  const [saved, setSaved] = useState<{ assignment: Assignment; property: Property; propertyCreated: boolean; projectId: string | null; visitId: string | null } | null>(null);
   const [rows, setRows] = useState<Row[] | null>(null);
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState("");
+  // The PM edited the review fields: don't overwrite their edits on re-parse without asking.
+  const [edited, setEdited] = useState(false);
+  const [parsedText, setParsedText] = useState("");
+  const parseSeq = useRef(0);
 
   const loadRows = () => api<{ assignments: Row[] }>("/api/assignments").then((r) => setRows(r.assignments)).catch((e) => setErr(e.message));
   useEffect(() => {
     void loadRows();
   }, []);
 
-  const parse = async () => {
+  // Paste → parse immediately; typing → parse after a short pause. Only the latest request wins.
+  const parse = async (t: string = text) => {
+    if (!t.trim()) return;
+    const seq = ++parseSeq.current;
     setErr("");
     setSaved(null);
     setBusy("parse");
     try {
-      const r = await api<ParseResult>("/api/fnol/parse", { body: { text } });
+      const r = await api<ParseResult>("/api/fnol/parse", { body: { text: t } });
+      if (seq !== parseSeq.current) return;
       setRes(r);
       setForm(r.input);
+      setEdited(false);
+      setParsedText(t);
     } catch (e) {
-      setErr((e as Error).message);
+      if (seq === parseSeq.current) setErr((e as Error).message);
     } finally {
-      setBusy("");
+      if (seq === parseSeq.current) setBusy("");
     }
   };
+  useEffect(() => {
+    if (!text.trim() || text === parsedText || edited) return;
+    const h = setTimeout(() => void parse(text), 700);
+    return () => clearTimeout(h);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [text, parsedText, edited]);
 
   const save = async () => {
     if (!form) return;
     setErr("");
     setBusy("save");
     try {
-      const r = await api<{ assignment: Assignment; property: Property; propertyCreated: boolean }>("/api/assignments", { body: { rawText: text, input: form } });
+      const r = await api<{ assignment: Assignment; property: Property; propertyCreated: boolean; projectId: string | null; visitId: string | null }>(
+        "/api/assignments",
+        { body: { rawText: text, input: form } },
+      );
       setSaved(r);
       setRes(null);
       setForm(null);
       setText("");
+      setParsedText("");
+      setEdited(false);
       void loadRows();
     } catch (e) {
       setErr((e as Error).message);
@@ -77,7 +98,10 @@ export default function Inbox() {
     }
   };
 
-  const set = <K extends keyof AssignmentInput>(k: K, v: AssignmentInput[K]) => setForm((f) => (f ? { ...f, [k]: v } : f));
+  const set = <K extends keyof AssignmentInput>(k: K, v: AssignmentInput[K]) => {
+    setEdited(true);
+    setForm((f) => (f ? { ...f, [k]: v } : f));
+  };
   const ev = (k: keyof FnolParse) => {
     const f = res?.parse[k] as { confidence: string; evidence: string } | null | undefined;
     return f && typeof f === "object" && "confidence" in f ? (
@@ -117,12 +141,32 @@ export default function Inbox() {
             placeholder="Paste the FNOL / assignment message from Slack, email or the dispatch system…"
             value={text}
             onChange={(e) => setText(e.target.value)}
+            onPaste={(e) => {
+              // Read the pasted message right away (the textarea value updates after this event).
+              const el = e.currentTarget;
+              const pasted = e.clipboardData.getData("text");
+              if (!pasted) return;
+              const next = el.value.slice(0, el.selectionStart) + pasted + el.value.slice(el.selectionEnd);
+              setEdited(false);
+              void parse(next);
+            }}
             aria-label="FNOL text"
           />
-          <button className="btn primary big" disabled={!text.trim() || !!busy} onClick={parse}>
-            {busy === "parse" ? "Reading…" : "Parse"}
-          </button>
-          <p className="small muted">Read by rules, not AI. Nothing is saved until you review and tap Save.</p>
+          {busy === "parse" && <p className="small muted">Reading the FNOL…</p>}
+          {res && edited && text !== parsedText && (
+            <div className="row small">
+              <span className="grow muted">The FNOL text changed after you edited the fields below.</span>
+              <button className="btn sm" disabled={!!busy} onClick={() => void parse()}>
+                Read again (replaces your edits)
+              </button>
+            </div>
+          )}
+          {!res && text.trim() && !busy && (
+            <button className="btn" onClick={() => void parse()}>
+              Read FNOL
+            </button>
+          )}
+          <p className="small muted">Fields fill in automatically when you paste (read by rules, not AI). Nothing is saved until you review and tap Save.</p>
         </div>
         {err && <div className="card danger" style={{ marginTop: 10 }}>{err}</div>}
 
@@ -130,10 +174,17 @@ export default function Inbox() {
           <div className="card ok" style={{ marginTop: 12 }}>
             <strong>Saved.</strong> {saved.propertyCreated ? "New property created" : "Added to the existing property"}:{" "}
             <a href={`/properties/${saved.property.id}`}>{saved.property.address}</a>
+            {saved.visitId ? " · assignment and first visit created." : ""}
             <div className="row" style={{ marginTop: 8 }}>
-              <button className="btn primary" disabled={!!busy} onClick={() => open(saved.assignment.id)}>
-                Open project &amp; start visit
-              </button>
+              {saved.projectId && saved.visitId ? (
+                <a className="btn primary" href={`/projects/${saved.projectId}?visit=${saved.visitId}`}>
+                  Go to the visit
+                </a>
+              ) : (
+                <button className="btn primary" disabled={!!busy} onClick={() => open(saved.assignment.id)}>
+                  Open project &amp; start visit
+                </button>
+              )}
               <a className="btn" href={`/properties/${saved.property.id}`}>
                 Property history
               </a>
@@ -241,7 +292,7 @@ export default function Inbox() {
                 {res.deadlines.deadlines.map((d) => `${d.label} within ${d.hours} h`).join(" · ")}
               </div>
               <button className="btn primary big" disabled={!!busy || !form.address.trim() || !form.serviceLines.length} onClick={save}>
-                {busy === "save" ? "Saving…" : "Save assignment"}
+                {busy === "save" ? "Saving…" : "Save — create assignment & visit"}
               </button>
             </div>
           </>

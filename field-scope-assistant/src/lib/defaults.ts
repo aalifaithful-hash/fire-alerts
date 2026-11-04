@@ -34,14 +34,14 @@ const CleaningMethods = z.object({
 const WhatGoesWithIt = z.object({
   baseboardRemoval: z.object({
     enabled: z.boolean(),
-    sealPrimePaintFullWall: z.boolean(), // seal/prime + paint the full continuous wall to the natural break
-    replaceBaseboard: z.boolean(),
-    paintBaseboard: z.boolean(),
+    sealPrimePaintFullWall: z.boolean(), // seal/prime + paint the full continuous wall to the natural break (wall SF)
+    replaceBaseboard: z.boolean(), // new baseboard, LF on the same walls
+    // (no "paint baseboard" option: the removed item is not repainted — the full wall is)
   }),
   flooringReplacement: z.object({
     enabled: z.boolean(),
     fullContinuousRun: z.boolean(), // replace the whole continuous run to the natural break
-    reinstallBaseAndTransitions: z.boolean(),
+    reinstallBaseAndTransitions: z.boolean(), // detach & reset baseboard (LF) + transitions (EA) at openings
     detachResetFixtures: z.array(z.string()), // fixtures that sit on the floor and must be reset
   }),
   drywallFloodCut: z.object({
@@ -55,6 +55,10 @@ const WhatGoesWithIt = z.object({
     reconnectPlumbingAndCountertop: z.boolean(),
   }),
   ceilingStain: z.object({ sealAndPaintFullCeiling: z.boolean() }),
+  ceilingRemoval: z.object({
+    enabled: z.boolean(), // removed ceiling drywall is replaced (same SF), then the full ceiling is painted
+    replaceInsulation: z.boolean(),
+  }),
 });
 
 // ---------------------------------------------------------------------------
@@ -189,7 +193,7 @@ export const DEFAULT_RULES: Rules = {
     odor: { label: "Odor", steps: ["HEPA air scrubber", "Deodorization as needed"] },
   },
   whatGoesWithIt: {
-    baseboardRemoval: { enabled: true, sealPrimePaintFullWall: true, replaceBaseboard: true, paintBaseboard: true },
+    baseboardRemoval: { enabled: true, sealPrimePaintFullWall: true, replaceBaseboard: true },
     flooringReplacement: {
       enabled: true,
       fullContinuousRun: true,
@@ -199,6 +203,7 @@ export const DEFAULT_RULES: Rules = {
     drywallFloodCut: { enabled: true, tapeFinishPrimePaintToBreak: true, removeInsulationToCutLine: true },
     cabinets: { removeToeKickForDrying: true, detachResetWhenFlooringReplaced: true, reconnectPlumbingAndCountertop: true },
     ceilingStain: { sealAndPaintFullCeiling: true },
+    ceilingRemoval: { enabled: true, replaceInsulation: true },
   },
   equipment: {
     airMoverSqFtMin: 50,

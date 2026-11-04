@@ -388,7 +388,8 @@ export async function editAssignment(id: string, patch: Partial<AssignmentInput>
 export async function openProjectForAssignment(id: string, opts: { projectId?: string | null } = {}) {
   const a = await getAssignment(id);
   const property = await getProperty(a.propertyId);
-  let projectId = opts.projectId ?? a.projectId;
+  // Same claim already has a project (e.g. EMS earlier, final walk-through now) → keep one project per claim.
+  let projectId = opts.projectId ?? a.projectId ?? (await relatedByClaim(a)).find((r) => r.projectId)?.projectId ?? null;
   if (projectId) await repo.getProject(projectId);
   else {
     const p = await repo.createProject({

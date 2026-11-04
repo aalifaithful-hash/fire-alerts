@@ -94,6 +94,17 @@ export function analyzeRoom(scan: RoomScanData, ctx: RoomContext): RoomAnalysis 
     if ((cat === "1" || cat === "2") && hrs > cc.grayToBlackAfterHours) notes.push(`⚑ ${hrs} h since loss: may have degraded to Category 3 after ~${cc.grayToBlackAfterHours} h — confirm.`);
   }
 
+  // ---------------- baseboard & walls (set up first: flooring rules need to know which base is replaced) ----------------
+  const affectedWalls = t.walls.filter((w) => m.walls.affectedWalls.includes(w.label));
+  const bbWallLabels = m.baseboard.walls.length ? m.baseboard.walls : m.walls.affectedWalls;
+  const bbWalls = t.walls.filter((w) => bbWallLabels.includes(w.label));
+  if (m.baseboard.affected && !bbWallLabels.length) questions.push(`${room}: which walls' baseboard is affected?`);
+  const bbAction = m.baseboard.action ?? (cat === "2" || cat === "3" ? "remove" : "detach_reset");
+  /** wall label → why it gets the full-wall seal/prime & paint (the paint quantity is always that wall's full SF). */
+  const paintWalls = new Map<string, string[]>();
+  const paintWall = (w: string, why: string) => paintWalls.set(w, [...(paintWalls.get(w) ?? []), why]);
+  const bbRemovedWalls = new Set<string>(m.baseboard.affected && bbAction === "remove" ? bbWallLabels : []);
+
   // ---------------- flooring ----------------
   const pct = m.flooring.affectedPct ?? (m.flooring.affected ? 100 : 0);
   const affFloorSF = t.floorSF != null && m.flooring.affected ? r1((t.floorSF * pct) / 100) : null;
@@ -135,6 +146,11 @@ export function analyzeRoom(scan: RoomScanData, ctx: RoomContext): RoomAnalysis 
         : `Continuous with ${others.filter((o) => o.replace).map((o) => o.roomLabel).join(", ")} (run ${m.flooring.continuousRun}) — no natural break, so the full run is replaced.`,
     });
     if (R.whatGoesWithIt.flooringReplacement.reinstallBaseAndTransitions) {
+      const resetWalls = t.walls.filter((w) => !bbRemovedWalls.has(w.label));
+      if (resetWalls.length) {
+        const parts = resetWalls.map(baseboardLF);
+        add({ id: "floor.baseboard.reset", ruleId: "whatGoesWithIt.flooringReplacement", kind: "reconstruction", scopeCategory: "detach_reset", activity: "Detach & reset", item: `baseboard for flooring replacement (${resetWalls.map((w) => w.label).join(", ")})`, quantity: r1(parts.reduce((a, p) => a + p.lf, 0)), unit: "LF", calc: parts.map((p) => p.calc).join("; "), justification: `Baseboard comes off to replace the flooring and is reset after${bbRemovedWalls.size ? ` (walls ${[...bbRemovedWalls].join(", ")} get new baseboard instead)` : ""}. Measured in LF along the walls, not floor SF.` });
+      } else if (!t.walls.length) questions.push(`${room}: measure the walls — baseboard has to be detached and reset for the flooring replacement.`);
       const doors = scan.measurements.openings.filter((o) => o.kind !== "window").length;
       add({ id: "floor.transitions", ruleId: "whatGoesWithIt.flooringReplacement", kind: "reconstruction", scopeCategory: "finish", activity: "Reinstall", item: "transitions / thresholds at openings", quantity: doors || null, unit: "EA", calc: doors ? `${doors} door/opening(s) recorded` : "no openings recorded", justification: "Goes with flooring replacement." });
     }
@@ -143,23 +159,18 @@ export function analyzeRoom(scan: RoomScanData, ctx: RoomContext): RoomAnalysis 
   }
 
   // ---------------- walls: baseboard, flood cut, insulation ----------------
-  const affectedWalls = t.walls.filter((w) => m.walls.affectedWalls.includes(w.label));
-  const bbWallLabels = m.baseboard.walls.length ? m.baseboard.walls : m.walls.affectedWalls;
-  const bbWalls = t.walls.filter((w) => bbWallLabels.includes(w.label));
-  if (m.baseboard.affected && !bbWallLabels.length) questions.push(`${room}: which walls' baseboard is affected?`);
-  const bbAction = m.baseboard.action ?? (cat === "2" || cat === "3" ? "remove" : "detach_reset");
-  const paintWalls = new Set<string>();
   if (m.baseboard.affected && bbWallLabels.length) {
     const parts = bbWalls.map(baseboardLF);
     const lf = bbWalls.length ? r1(parts.reduce((a, p) => a + p.lf, 0)) : null;
     const calc = parts.length ? parts.map((p) => p.calc).join("; ") : "walls not measured";
     add({ id: "baseboard", ruleId: "baseboard", kind: "mitigation", scopeCategory: bbAction === "remove" ? "removal" : "detach_reset", activity: bbAction === "remove" ? "Remove" : "Detach & reset", item: `baseboard (${bbWallLabels.join(", ")})`, quantity: lf, unit: "LF", calc, justification: bbAction === "remove" ? `Category ${cat ?? "?"} contact / wet baseboard — removed for drying access.` : "Detached for drying access behind it; reset after drying." });
+    // Removing baseboard disturbs the wall finish along its whole length. What goes with it is new
+    // baseboard (LF, same walls) and seal/prime + paint of the FULL continuous wall (wall SF) —
+    // never a "paint baseboard" line, and never paint measured in baseboard LF or floor SF.
     if (bbAction === "remove" && R.whatGoesWithIt.baseboardRemoval.enabled) {
       if (R.whatGoesWithIt.baseboardRemoval.replaceBaseboard)
-        add({ id: "baseboard.replace", ruleId: "whatGoesWithIt.baseboardRemoval", kind: "reconstruction", scopeCategory: "replacement", activity: "Replace", item: `baseboard (${bbWallLabels.join(", ")})`, quantity: lf, unit: "LF", calc, justification: "Goes with baseboard removal." });
-      if (R.whatGoesWithIt.baseboardRemoval.paintBaseboard)
-        add({ id: "baseboard.paint", ruleId: "whatGoesWithIt.baseboardRemoval", kind: "reconstruction", scopeCategory: "painting", activity: "Paint", item: "baseboard", quantity: lf, unit: "LF", calc, justification: "Goes with baseboard replacement." });
-      if (R.whatGoesWithIt.baseboardRemoval.sealPrimePaintFullWall) bbWallLabels.forEach((w) => paintWalls.add(w));
+        add({ id: "baseboard.replace", ruleId: "whatGoesWithIt.baseboardRemoval", kind: "reconstruction", scopeCategory: "replacement", activity: "Replace", item: `baseboard (${bbWallLabels.join(", ")})`, quantity: lf, unit: "LF", calc, justification: "New baseboard where it was removed (same walls, same LF). Its finish is covered by the full-wall seal/prime & paint line." });
+      if (R.whatGoesWithIt.baseboardRemoval.sealPrimePaintFullWall) bbWallLabels.forEach((w) => paintWall(w, "baseboard removed"));
     }
   }
 
@@ -173,6 +184,9 @@ export function analyzeRoom(scan: RoomScanData, ctx: RoomContext): RoomAnalysis 
     if (drywall && m.walls.floodCut === "auto" && cat !== "2" && cat !== "3")
       questions.push(`${room}: ${cat === "1" ? "Category 1 — walls are dried in place by default." : "Category not set."} Flood cut the drywall? (set a height to add it)`);
     if (drywall && wet != null && (explicit || auto) && R.whatGoesWithIt.drywallFloodCut.enabled) {
+      const fcNoBase = m.walls.affectedWalls.filter((w) => !bbRemovedWalls.has(w));
+      if (fcNoBase.length)
+        questions.push(`${room}: flood cut on ${fcNoBase.join(", ")} — the baseboard on ${fcNoBase.length > 1 ? "those walls" : "that wall"} has to come off. Mark baseboard affected (remove) for ${fcNoBase.join(", ")}?`);
       const ch = explicit ? { cutIn: m.walls.floodCut as number, calc: `${m.walls.floodCut}" set by PM` } : cutHeight(wet, cat, R);
       const parts = affectedWalls.map((w) => floodCutSF(w, ch.cutIn));
       const sf = parts.length ? r1(parts.reduce((a, p) => a + p.sf, 0)) : null;
@@ -183,15 +197,19 @@ export function analyzeRoom(scan: RoomScanData, ctx: RoomContext): RoomAnalysis 
       if (R.whatGoesWithIt.drywallFloodCut.tapeFinishPrimePaintToBreak) {
         add({ id: "drywall.replace", ruleId: "whatGoesWithIt.drywallFloodCut", kind: "reconstruction", scopeCategory: "replacement", activity: "Replace", item: `drywall ${ch.cutIn}" — hang, tape, finish`, quantity: sf, unit: "SF", calc, justification: "Goes with the flood cut." });
         if (m.insulation) add({ id: "insulation.replace", ruleId: "whatGoesWithIt.drywallFloodCut", kind: "reconstruction", scopeCategory: "replacement", activity: "Replace", item: "wall insulation", quantity: sf, unit: "SF", calc, justification: "Goes with insulation removal." });
-        m.walls.affectedWalls.forEach((w) => paintWalls.add(w));
+        m.walls.affectedWalls.forEach((w) => paintWall(w, `drywall replaced to ${ch.cutIn}"`));
       }
     }
   }
   if (paintWalls.size) {
+    const labels = [...paintWalls.keys()];
     const ws = t.walls.filter((w) => paintWalls.has(w.label));
     const parts = ws.map((w) => wallPaintSF(w, t.heightFt));
-    const sf = parts.length && parts.every((p) => p.sf != null) ? r1(parts.reduce((a, p) => a + (p.sf ?? 0), 0)) : null;
-    add({ id: "walls.paint", ruleId: "whatGoesWithIt.paintFullWall", kind: "reconstruction", scopeCategory: "painting", activity: "Seal/prime & paint", item: `full continuous wall to natural break (${[...paintWalls].join(", ")})`, quantity: sf, unit: "SF", calc: parts.length ? parts.map((p) => p.calc).join("; ") : "walls not measured", justification: "Baseboard/drywall repair on these walls — the full continuous wall is painted to the natural break so the finish matches." });
+    // every painted wall must be measured: a partial sum would understate the full-wall quantity
+    const sf = ws.length === labels.length && parts.every((p) => p.sf != null) ? r1(parts.reduce((a, p) => a + (p.sf ?? 0), 0)) : null;
+    const missing = labels.filter((l) => !ws.some((w) => w.label === l));
+    const calc = [...parts.map((p) => p.calc), ...missing.map((l) => `${l} wall: not measured`)].join("; ") || "walls not measured";
+    add({ id: "walls.paint", ruleId: "whatGoesWithIt.paintFullWall", kind: "reconstruction", scopeCategory: "painting", activity: "Seal/prime & paint", item: `full continuous wall to natural break (${labels.join(", ")})`, quantity: sf, unit: "SF", calc, justification: `${labels.map((l) => `${l}: ${paintWalls.get(l)!.join(" + ")}`).join("; ")} — the full continuous wall (corner to corner, floor to ceiling, openings deducted) is sealed/primed and painted to the natural break so the finish matches. Quantity is wall SF, not baseboard LF or floor SF.` });
   }
 
   // ---------------- ceiling ----------------
@@ -199,12 +217,18 @@ export function analyzeRoom(scan: RoomScanData, ctx: RoomContext): RoomAnalysis 
     const cpct = m.ceiling.affectedPct ?? 100;
     const csf = t.ceilingSF != null ? r1((t.ceilingSF * cpct) / 100) : null;
     const ccalc = t.ceilingSF != null ? `${t.floorCalc} (ceiling)${cpct !== 100 ? ` × ${cpct}% = ${csf} SF` : ""}` : "ceiling not measured";
-    if (m.ceiling.action === "remove")
+    if (m.ceiling.action === "remove") {
       add({ id: "ceiling.remove", ruleId: "ceiling.remove", kind: "mitigation", scopeCategory: "removal", activity: "Remove", item: `ceiling drywall${m.insulation ? " and insulation above" : ""}`, quantity: csf, unit: "SF", calc: ccalc, justification: "Wet/sagging ceiling — removed (PM decision)." });
+      if (R.whatGoesWithIt.ceilingRemoval.enabled) {
+        add({ id: "ceiling.replace", ruleId: "whatGoesWithIt.ceilingRemoval", kind: "reconstruction", scopeCategory: "replacement", activity: "Replace", item: "ceiling drywall — hang, tape, finish", quantity: csf, unit: "SF", calc: ccalc, justification: "Replaces the ceiling drywall removed (same SF). The finish is covered by the full-ceiling seal & paint line." });
+        if (m.insulation && R.whatGoesWithIt.ceilingRemoval.replaceInsulation)
+          add({ id: "ceiling.insulation.replace", ruleId: "whatGoesWithIt.ceilingRemoval", kind: "reconstruction", scopeCategory: "replacement", activity: "Replace", item: "ceiling insulation", quantity: csf, unit: "SF", calc: ccalc, justification: "Replaces the insulation removed with the ceiling." });
+      }
+    }
     if (fireSmoke)
       add({ id: "ceiling.clean", ruleId: "smoke.clean.ceiling", kind: "mitigation", scopeCategory: "cleaning", activity: "Clean", item: `ceiling — ${smokeMethod(scan, R)}`, quantity: csf, unit: "SF", calc: ccalc, justification: "Smoke/soot residue on ceiling." });
     if (R.whatGoesWithIt.ceilingStain.sealAndPaintFullCeiling && (m.ceiling.action === "seal_paint" || m.ceiling.action === "remove" || fireSmoke))
-      add({ id: "ceiling.paint", ruleId: "whatGoesWithIt.ceilingStain", kind: "reconstruction", scopeCategory: "painting", activity: "Seal (stain-blocking) & paint", item: `full ceiling${m.ceiling.action === "remove" ? " after drywall replacement" : ""}`, quantity: t.ceilingSF, unit: "SF", calc: t.ceilingSF != null ? `${t.floorCalc} (full ceiling)` : "ceiling not measured", justification: "Stained/repaired area — the full ceiling is sealed and painted for a uniform finish." });
+      add({ id: "ceiling.paint", ruleId: "whatGoesWithIt.ceilingStain", kind: "reconstruction", scopeCategory: "painting", activity: "Seal (stain-blocking) & paint", item: `full ceiling${m.ceiling.action === "remove" ? " after drywall replacement" : ""}`, quantity: t.ceilingSF, unit: "SF", calc: t.ceilingSF != null ? `${t.floorCalc} (full ceiling)` : "ceiling not measured", justification: `${m.ceiling.action === "remove" ? "Ceiling drywall replaced" : fireSmoke ? "Smoke/soot on the ceiling" : "Stained ceiling"}${cpct !== 100 ? ` (${cpct}% affected)` : ""} — the FULL ceiling is sealed (stain-blocking) and painted for a uniform finish. Quantity is the full ceiling SF, not the affected or removed area.` });
   }
 
   // ---------------- cabinets ----------------
@@ -214,7 +238,10 @@ export function analyzeRoom(scan: RoomScanData, ctx: RoomContext): RoomAnalysis 
     if (m.cabinets.detach)
       add({ id: "cabinets.detach", ruleId: "cabinets.detach", kind: "mitigation", scopeCategory: "detach_reset", activity: "Detach", item: "base cabinets for drying access", quantity: lf, unit: "LF", calc, justification: "Wet cavity/flooring under the cabinets needs drying access." });
     else if (R.whatGoesWithIt.cabinets.removeToeKickForDrying)
+    {
       add({ id: "cabinets.toekick", ruleId: "whatGoesWithIt.cabinets", kind: "mitigation", scopeCategory: "cavity_access", activity: "Remove", item: "toe kick for drying access", quantity: lf, unit: "LF", calc, justification: "Dry the cavity under the cabinets without detaching them." });
+      add({ id: "cabinets.toekick.reinstall", ruleId: "whatGoesWithIt.cabinets", kind: "reconstruction", scopeCategory: "detach_reset", activity: "Reinstall", item: "toe kick (replace if damaged)", quantity: lf, unit: "LF", calc, justification: "Goes back on after drying (same LF as removed)." });
+    }
     if (m.cabinets.detach || (thisReplace && R.whatGoesWithIt.cabinets.detachResetWhenFlooringReplaced)) {
       add({ id: "cabinets.reset", ruleId: "whatGoesWithIt.cabinets", kind: "reconstruction", scopeCategory: "detach_reset", activity: "Reset & reattach", item: "base cabinets", quantity: lf, unit: "LF", calc, justification: m.cabinets.detach ? "Goes with cabinet detach." : "Cabinets reset when the flooring under them is replaced." });
       if (R.whatGoesWithIt.cabinets.reconnectPlumbingAndCountertop)

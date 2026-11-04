@@ -61,6 +61,45 @@ describe("paste-in FNOL inbox", () => {
     expect((await intake.relatedByClaim(all[0])).length).toBe(1); // same claim number links them
   });
 
+  it("save creates property + assignment + first visit in one step; same claim reuses the project", async () => {
+    const p1 = await call(parseRoute.POST as Handler<object>, "POST", {}, { text: S.FNOL_MITIGATION_INITIAL });
+    const s1 = await call(assignmentsRoute.POST as Handler<object>, "POST", {}, { rawText: S.FNOL_MITIGATION_INITIAL, input: p1.json!.input });
+    expect(s1.status).toBe(200);
+    expect(s1.json!.propertyCreated).toBe(true);
+    expect(s1.json!.assignment.status).toBe("linked");
+    const v = await repo.getVisit(s1.json!.projectId, s1.json!.visitId);
+    expect([v.type, v.stage, v.serviceLine]).toEqual(["initial_mitigation", "initial_walkthrough", "mitigation"]);
+    const proj = await repo.getProject(s1.json!.projectId);
+    expect([proj.claimNumber, proj.customer, proj.contact, proj.lossDate]).toEqual(["CC-77812-A", "Mark Sample", "917-555-0199", "2026-10-30"]);
+
+    // EMS today, final walk-through later on the same claim → one project, two visits
+    const e = await call(parseRoute.POST as Handler<object>, "POST", {}, { text: S.FNOL_EMS });
+    const se = await call(assignmentsRoute.POST as Handler<object>, "POST", {}, { rawText: S.FNOL_EMS, input: e.json!.input });
+    const f = await call(parseRoute.POST as Handler<object>, "POST", {}, { text: S.FNOL_FINAL });
+    const sf = await call(assignmentsRoute.POST as Handler<object>, "POST", {}, { rawText: S.FNOL_FINAL, input: f.json!.input });
+    expect(sf.json!.projectId).toBe(se.json!.projectId);
+    expect(sf.json!.visitId).not.toBe(se.json!.visitId);
+    expect((await repo.getVisit(sf.json!.projectId, sf.json!.visitId)).type).toBe("final_walkthrough");
+
+    // openVisit:false keeps the assignment-only save
+    const s3 = await call(assignmentsRoute.POST as Handler<object>, "POST", {}, { rawText: "x", input: { ...p1.json!.input, address: "1 Other Pl" }, openVisit: false });
+    expect([s3.json!.visitId, s3.json!.assignment.status]).toEqual([null, "new"]);
+  });
+
+  it("a pasted Slack-formatted FNOL comes back fully populated from the parse route", async () => {
+    const slack = S.FNOL_EMS.replace(/^([^:\n]+):/gm, "*$1:*");
+    const p = await call(parseRoute.POST as Handler<object>, "POST", {}, { text: slack });
+    expect(p.json!.input).toMatchObject({
+      claimNumber: "WTR-2026-118842",
+      insured: "Jane Example",
+      contactPhone: "(212) 555-0142",
+      address: "429 E 52nd St, Apt 5C, New York, NY 10022",
+      unit: "5C",
+      lossDate: "2026-11-02",
+      causeOfLoss: "supply line burst under kitchen sink",
+    });
+  });
+
   it("refuses to save without an address or service line (nothing guessed)", async () => {
     const p = await call(parseRoute.POST as Handler<object>, "POST", {}, { text: S.FNOL_AMBIGUOUS });
     const r = await call(assignmentsRoute.POST as Handler<object>, "POST", {}, { rawText: S.FNOL_AMBIGUOUS, input: p.json!.input });

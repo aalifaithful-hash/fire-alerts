@@ -47,10 +47,14 @@ All values are in `src/lib/defaults.ts` and editable under Settings → Rules & 
 | 1 | | **Cat 3 (black):** extract, remove porous materials in contact (carpet, pad, drywall, insulation), flood cut, antimicrobial, evaluate contents for disposal with customer sign-off | |
 | 1 | | **Dry smoke:** HEPA vacuum + dry chemical sponge. **Wet smoke:** degreaser wet-clean. **Protein smoke:** degreaser + odor control | Chosen per room by smoke type |
 | 1 | | **Heavy char/soot on non-porous:** clean. **Porous with heavy deposits:** seal (stain-blocking primer) or remove. **Odor:** HEPA air scrubber + deodorization as needed | |
-| 2 | What goes with it | **Baseboard removed:** replace baseboard, paint baseboard, seal/prime and paint the **full continuous wall to the natural break** | Corner to corner, openings deducted |
+| 2 | What goes with it | **Baseboard removed:** new baseboard (LF, same walls) + seal/prime and paint the **full continuous wall to the natural break** (wall SF). No "paint baseboard" line, and wall paint is never sized from baseboard LF or floor SF | Corner to corner, floor to ceiling, openings deducted. Fixed Nov 4: an earlier default also added "Paint baseboard (LF)" |
 | 2 | | **Flooring replaced:** the **full continuous run to the natural break** (rooms that share a run name), reinstall base and transitions at each opening, detach and reset floor fixtures (toilet, vanity, appliances) | An unaffected room in the run is included, with the reason stated |
 | 2 | | **Drywall flood cut:** remove insulation to the cut line; replace drywall (hang, tape, finish); seal/prime and paint to the natural break | |
 | 2 | | **Cabinets:** remove the toe kick for drying access, or detach; reset and reattach when detached or when the flooring under them is replaced; reconnect countertop, plumbing and appliances | |
+| 2 | | **Flooring replaced:** baseboard detach & reset in **LF** on the walls whose base is not already being replaced (never floor SF) | Added Nov 4 |
+| 2 | | **Ceiling drywall removed:** replace the same SF (and insulation), then seal and paint the **full ceiling** SF, not the patch | Added Nov 4 |
+| 2 | | **Toe kick removed for drying:** reinstall the same LF | Added Nov 4 |
+| 2 | | **Flood cut on a wall whose baseboard isn't marked:** asks to mark that baseboard for removal | Added Nov 4 |
 | 2 | | **Ceiling stain:** seal (stain-blocking) and paint the full ceiling | |
 | 3 | Equipment ratios | 1 air mover per **50–70 SF** of wet floor (range shown, midpoint suggested) | Shown as "calculated, not installed". The installed count is only what the PM records |
 | 3 | | 1 LGR dehumidifier (~70–130 pints/day AHAM) per **1,000–1,500 SF** of affected space / drying chamber | Visit-level summary |
