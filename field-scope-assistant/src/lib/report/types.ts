@@ -7,11 +7,34 @@ export interface Finding<T> {
   value: T;
   quote: string;
   page: number;
+  /** The report room this statement sits under, when the report is organized by room. */
+  room?: string | null;
+}
+
+/** One room the report describes (multi-room reports list several). Unstated values are null. */
+export interface RoomFinding {
+  name: string;
+  growth: boolean;
+  lengthFt: number | null;
+  widthFt: number | null;
+  heightFt: number | null;
+  areaSF: number | null;
+  coverage: { whole: boolean; pct: number | null } | null;
+  /** Vague extent wording with no number ("widespread", "extensive"). */
+  vague: string | null;
+  /** The statements each value came from (for quotes on phone). */
+  quotes: { dims: string | null; area: string | null; coverage: string | null };
 }
 type F<T> = Finding<T> | null;
 
 export interface ReportFindings {
   analyzer: "rules" | "ai";
+  /** What kind of report this reads as. Anything but "mold" is held and never applied. */
+  reportType: "mold" | "water" | "other";
+  /** Every room the report describes, in order. The single-room fields below mirror rooms[0]. */
+  rooms: Finding<RoomFinding>[];
+  /** Flooring material named with the growth (e.g. "wood flooring"). */
+  flooringType: F<string>;
   /** False when there is no selectable text (photo or scanned report). */
   readable: boolean;
   textChars: number;
@@ -28,9 +51,9 @@ export interface ReportFindings {
   containment: F<{ level: "full" | "limited" | "none" | "unspecified"; negativeAir: boolean }>;
   removalExtent: F<string>;
   subfloor: F<"clean" | "remove">;
-  wallsGrowth: F<{ growth: boolean; walls: string[] }>;
+  wallsGrowth: F<{ growth: boolean; walls: string[]; heightIn: number | null }>;
   baseboardBacksGrowth: F<{ growth: boolean; walls: string[] }>;
-  framingGrowth: F<boolean>;
+  framingGrowth: F<{ growth: boolean; where: "joists" | "studs" | "framing"; action: "clean" | "remove" | null }>;
   clearanceCriteria: F<string>;
   clearanceBy: F<string>;
   moistureSource: F<string>;
@@ -43,7 +66,7 @@ export interface ReportFindings {
   unanswered: { key: FindingKey; label: string; quote: string | null }[];
 }
 
-export type FindingKey = Exclude<keyof ReportFindings, "analyzer" | "readable" | "textChars" | "unanswered">;
+export type FindingKey = Exclude<keyof ReportFindings, "analyzer" | "readable" | "textChars" | "unanswered" | "reportType" | "rooms" | "flooringType">;
 
 /** Plain-language names, in the order the findings panel shows them. */
 export const FINDING_LABELS: [FindingKey, string][] = [
@@ -114,10 +137,13 @@ export function findingText(key: FindingKey, f: ReportFindings): string | null {
       return v === "remove" ? "Remove the subfloor" : "Clean and treat the subfloor (stays)";
     case "wallsGrowth":
     case "baseboardBacksGrowth": {
-      const g = v as { growth: boolean; walls: string[] };
-      return g.growth ? `Yes${g.walls.length ? ` (${g.walls.join(", ")})` : ""}` : "No";
+      const g = v as { growth: boolean; walls: string[]; heightIn?: number | null };
+      return g.growth ? `Yes${g.walls.length ? ` (${g.walls.join(", ")})` : " (walls not named)"}${g.heightIn ? `, up to ${g.heightIn}"` : ""}` : "No";
     }
-    case "framingGrowth":
+    case "framingGrowth": {
+      const g = v as { growth: boolean; where: string; action: string | null };
+      return g.growth ? `Yes — ${g.where}${g.action === "remove" ? ", remove/replace (structural)" : g.action === "clean" ? ", clean in place" : ", clean or remove not stated"}` : "No";
+    }
     case "sourceFixed":
       return v ? "Yes" : "No";
     case "flooringContinuous": {

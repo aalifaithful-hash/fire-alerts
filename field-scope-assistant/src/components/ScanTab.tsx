@@ -20,6 +20,7 @@ const blank = (): Editable => ({
     ceiling: { affected: false, affectedPct: null, action: null },
     insulation: false,
     subfloor: null,
+    framing: { growth: false, where: null, action: null },
     cabinets: { affected: false, lf: null, detach: false },
     fixtures: [],
   },
@@ -28,6 +29,12 @@ const blank = (): Editable => ({
   moisturePoints: [],
   equipmentPlaced: [],
   reportDocumentId: null,
+  reportRoom: null,
+  reportPrimary: false,
+  reportValues: {},
+  containmentGroup: null,
+  lineNotes: {},
+  reportChanges: [],
 });
 const WALLS = ["N", "E", "S", "W"];
 const num = (v: string) => (v.trim() === "" || Number.isNaN(Number(v)) ? null : Number(v));

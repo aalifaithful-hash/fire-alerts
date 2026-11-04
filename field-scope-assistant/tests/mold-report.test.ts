@@ -50,9 +50,9 @@ describe("rules analyzer — sample report (a), Test 1", () => {
     expect(f.containment?.value).toEqual({ level: "full", negativeAir: true });
     expect(f.removalExtent?.value).toMatch(/remove all wood flooring and underlayment .* 2 ft beyond visible growth/);
     expect(f.subfloor?.value).toBe("clean");
-    expect(f.wallsGrowth?.value).toEqual({ growth: false, walls: [] });
+    expect(f.wallsGrowth?.value).toEqual({ growth: false, walls: [], heightIn: null });
     expect(f.baseboardBacksGrowth?.value).toEqual({ growth: true, walls: ["N", "E"] });
-    expect(f.framingGrowth?.value).toBe(false);
+    expect(f.framingGrowth?.value).toEqual({ growth: false, where: "framing", action: null });
     expect(f.moistureSource?.value).toMatch(/radiator supply valve/);
     expect(f.sourceFixed?.value).toBe(true);
     expect(f.moldType?.value).toMatch(/Cladosporium/);
@@ -154,7 +154,7 @@ describe("report upload, wrong report, apply → scope (Test 1)", () => {
     expect(v.findings.find((r) => r.key === "clearanceCriteria")).toMatchObject({ value: null, stated: "open", quote: "Post-remediation verification: to be determined." });
     expect(v.findings.find((r) => r.key === "yearBuilt")).toMatchObject({ stated: "missing" });
     expect(v.mismatches).toEqual([]);
-    expect(v.changes.map((c) => c.key).sort()).toEqual(["floor.pct", "measurements", "room.name", "source.fixture", "source.status", "subfloor"]);
+    expect(v.changes.map((c) => c.key).sort()).toEqual(["baseboard.growth", "floor.pct", "measurements", "room.name", "source.fixture", "source.status", "subfloor"]);
     expect(v.changes.every((c) => !c.conflict)).toBe(true);
     const p = (id: string) => v.preview.find((l) => l.id === id)!;
     expect(p("mold.floor.remove")).toMatchObject({ quantity: 96, unit: "SF", calc: "12 ft × 8 ft = 96 SF" });

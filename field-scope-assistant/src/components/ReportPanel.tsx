@@ -5,7 +5,7 @@ import { useStatus } from "./useStatus";
 import type { ScopeLine } from "@/lib/scan";
 
 type Row = { key: string; label: string; value: string | null; quote: string | null; page: number | null; stated: "found" | "open" | "missing" };
-type Change = { key: string; label: string; current: string | null; proposed: string; quote: string; page: number; conflict: boolean };
+type Change = { id: string; room: string; key: string; label: string; current: string | null; proposed: string; quote: string; page: number; conflict: boolean; previousReport: string | null };
 type View = {
   reports: { id: string; filename: string; status: string; warning: string | null; contentType: string; confirmed: boolean }[];
   ai: { enabled: false; message: string };
@@ -14,10 +14,13 @@ type View = {
     filename: string;
     findings: Row[];
     room: { locationId: string; label: string } | null;
+    rooms: { name: string; target: string | null; isNew: boolean; primary: boolean; runOnly: boolean }[];
     applied: boolean;
     changes: Change[];
     mismatches: string[];
+    replaced: string[];
     preview: ScopeLine[];
+    previewRooms: { locationId: string; label: string; lines: ScopeLine[] }[];
     stillMissing: string[];
   };
 };
@@ -41,7 +44,7 @@ export default function ReportPanel({ projectId, visitId, onApplied }: { project
     try {
       const d = await api<View>(base);
       setV(d);
-      setPicked(Object.fromEntries((d.active?.changes ?? []).map((c) => [c.key, !c.conflict])));
+      setPicked(Object.fromEntries((d.active?.changes ?? []).map((c) => [c.id, !c.conflict])));
     } catch (e) {
       setErr((e as Error).message);
     }
@@ -75,6 +78,9 @@ export default function ReportPanel({ projectId, visitId, onApplied }: { project
   const a = v.active;
   const held = v.reports.filter((r) => r.status === "needs_confirmation");
   const unreadable = v.reports.filter((r) => r.status === "unreadable");
+  const wrongType = v.reports.filter((r) => r.status === "wrong_type");
+  const superseded = v.reports.filter((r) => r.status === "superseded");
+  const multi = (a?.rooms.length ?? 0) > 1;
   const keys = Object.entries(picked).filter(([, on]) => on).map(([k]) => k);
 
   return (
@@ -102,6 +108,18 @@ export default function ReportPanel({ projectId, visitId, onApplied }: { project
           </div>
         </div>
       ))}
+
+      {wrongType.map((r) => (
+        <div key={r.id} className="card danger small" role="alert">
+          <strong>Not a mold report?</strong> {r.warning?.replace(/^Not a mold report\?\s*/, "")}
+          <div className="row" style={{ marginTop: 8 }}>
+            <button className="btn sm" disabled={!!busy} onClick={() => run("cancel", () => api(`/api/projects/${projectId}/documents/${r.id}`, { method: "DELETE" }))}>
+              Remove it
+            </button>
+          </div>
+        </div>
+      ))}
+      {superseded.length > 0 && <div className="small muted">Replaced by a newer report: {superseded.map((r) => r.filename).join(", ")}</div>}
 
       {unreadable.map((r) => (
         <div key={r.id} className="card warn small">
@@ -133,6 +151,22 @@ export default function ReportPanel({ projectId, visitId, onApplied }: { project
             </div>
           </details>
 
+          {multi && (
+            <div className="small">
+              <strong>Rooms in the report:</strong>{" "}
+              {a.rooms.map((r) => `${r.name || "unnamed"}${r.isNew ? " (new room)" : r.target ? ` → ${r.target}` : ""}${r.runOnly ? " — flooring run only" : ""}`).join(" · ")}
+            </div>
+          )}
+          {a.replaced.length > 0 && (
+            <div className="card warn small" role="alert">
+              <strong>This report changes what the earlier report said</strong> — ticked, review the lines after applying:
+              <ul style={{ paddingLeft: 18, margin: "4px 0 0" }}>
+                {a.replaced.map((m, i) => (
+                  <li key={i}>{m}</li>
+                ))}
+              </ul>
+            </div>
+          )}
           {a.mismatches.length > 0 && (
             <div className="card warn small" role="alert">
               <strong>Report and scope don&apos;t agree</strong> — nothing is overwritten unless you tick it:
@@ -150,11 +184,15 @@ export default function ReportPanel({ projectId, visitId, onApplied }: { project
             <div className="stack" style={{ gap: 4 }}>
               <strong className="small">Changes to {a.room?.label ?? "the scan"} from the report</strong>
               {a.changes.map((c) => (
-                <label key={c.key} className="row small" style={{ alignItems: "flex-start" }}>
-                  <input type="checkbox" checked={!!picked[c.key]} onChange={(e) => setPicked({ ...picked, [c.key]: e.target.checked })} aria-label={`Apply ${c.label}`} />
+                <label key={c.id} className="row small" style={{ alignItems: "flex-start" }}>
+                  <input type="checkbox" checked={!!picked[c.id]} onChange={(e) => setPicked({ ...picked, [c.id]: e.target.checked })} aria-label={`Apply ${c.label}${c.room ? ` (${c.room})` : ""}`} />
                   <span className="grow">
-                    {c.conflict ? "⚑ " : ""}
-                    <strong>{c.label}:</strong> {c.current ? `${c.current} → ` : ""}
+                    {c.conflict ? "⚑ your entry · " : c.previousReport ? "↻ earlier report · " : ""}
+                    <strong>
+                      {multi && c.room ? `${c.room} — ` : ""}
+                      {c.label}:
+                    </strong>{" "}
+                    {c.current ? `${c.current} → ` : ""}
                     {c.proposed}
                     <span className="muted" style={{ display: "block", fontStyle: "italic" }}>
                       “{c.quote}” (p. {c.page})
@@ -165,23 +203,30 @@ export default function ReportPanel({ projectId, visitId, onApplied }: { project
             </div>
           )}
 
-          {a.preview.length > 0 && !a.applied && (
+          {a.previewRooms.some((r) => r.lines.length) && (!a.applied || a.changes.length > 0) && (
             <details>
               <summary className="small">
-                <strong>Proposed lines from the report ({a.preview.filter((l) => l.kind !== "reconstruction").length} mitigation, {a.preview.filter((l) => l.kind === "reconstruction").length} reconstruction)</strong>
+                <strong>
+                  Proposed lines from the report ({a.previewRooms.reduce((n, r) => n + r.lines.filter((l) => l.kind !== "reconstruction").length, 0)} mitigation, {a.previewRooms.reduce((n, r) => n + r.lines.filter((l) => l.kind === "reconstruction").length, 0)} reconstruction
+                  {multi ? `, ${a.previewRooms.length} rooms` : ""})
+                </strong>
               </summary>
-              <div className="stack" style={{ gap: 6, marginTop: 6 }}>
-                {a.preview.map((l) => (
-                  <div key={l.id} className="small" data-preview-line={l.id}>
-                    <strong>
-                      {l.activity} {l.item}
-                    </strong>{" "}
-                    — {l.quantity == null ? "to measure" : `${l.quantity} ${l.unit}`}
-                    <div className="muted">{l.calc}</div>
-                    <div>{l.justification}</div>
-                  </div>
-                ))}
-              </div>
+              {a.previewRooms.map((r) => (
+                <div key={r.locationId} className="stack" style={{ gap: 6, marginTop: 6 }}>
+                  {multi && <strong className="small">{r.label}</strong>}
+                  {r.lines.map((l) => (
+                    <div key={l.id} className="small" data-preview-line={l.id}>
+                      <strong>
+                        {l.activity} {l.item}
+                      </strong>{" "}
+                      — {l.quantity == null ? "no quantity yet" : `${l.quantity} ${l.unit}`}
+                      <div className="muted">{l.calc}</div>
+                      <div>{l.justification}</div>
+                      {l.flags.some((f) => f.startsWith("HOLD")) && <div style={{ color: "var(--fire, #c53030)" }}>HOLD — moisture source not fixed</div>}
+                    </div>
+                  ))}
+                </div>
+              ))}
             </details>
           )}
 
@@ -199,7 +244,7 @@ export default function ReportPanel({ projectId, visitId, onApplied }: { project
               {busy === "apply" ? "Applying…" : a.applied ? "Apply the ticked changes" : "Apply report to the scan"}
             </button>
           )}
-          {a.applied && <div className="small">✓ Applied to {a.room?.label}. The lines below are proposed — accept them in the room as usual.</div>}
+          {a.applied && <div className="small">✓ Applied to {multi ? a.rooms.map((r) => r.target ?? r.name).join(", ") : a.room?.label}. The lines below are proposed — accept or reject each one in its room. Lines the report changed are marked.</div>}
 
           <div className={`card small ${a.stillMissing.length ? "warn" : "ok"}`}>
             <strong>{a.stillMissing.length ? "Still missing after the report" : "The report answers every pending item"}</strong>

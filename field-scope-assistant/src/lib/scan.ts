@@ -83,6 +83,10 @@ export const ScanMaterials = z.object({
   insulation: z.boolean().default(false),
   /** Mold: subfloor under removed flooring — cleaned in place or removed (from the assessor's report). */
   subfloor: z.enum(["clean", "remove"]).nullable().default(null),
+  /** Mold: growth on framing (floor joists or wall studs) and whether it is cleaned or removed. */
+  framing: z
+    .object({ growth: z.boolean().default(false), where: z.enum(["joists", "studs", "framing"]).nullable().default(null), action: z.enum(["clean", "remove"]).nullable().default(null) })
+    .default({ growth: false, where: null, action: null }),
   cabinets: z
     .object({ affected: z.boolean().default(false), lf: n.default(null), detach: z.boolean().default(false) })
     .default({ affected: false, lf: null, detach: false }),
@@ -143,6 +147,17 @@ export const RoomScanData = z.object({
   lines: z.array(ScopeLine).default([]),
   /** The mold report applied to this room (documents.id), if any. */
   reportDocumentId: z.string().nullable().default(null),
+  /** Report room this scan was matched to, and whether it carries the report-wide items. */
+  reportRoom: z.string().nullable().default(null),
+  reportPrimary: z.boolean().default(false),
+  /** Values the applied report set (change key → value) — tells report values apart from the PM's own. */
+  reportValues: z.record(z.string(), z.string()).default({}),
+  /** Connected rooms in one containment: the primary room carries the containment lines. */
+  containmentGroup: z.object({ primary: z.boolean(), rooms: z.array(z.string()) }).nullable().default(null),
+  /** Per-line notes (e.g. "changed by the mold report: was 48 SF") until the PM accepts or rejects the line. */
+  lineNotes: z.record(z.string(), z.string()).default({}),
+  /** What the last applied report changed in this room. */
+  reportChanges: z.array(z.string()).default([]),
   /** PM decisions keyed by line id (kept even when a line disappears and comes back). */
   decisions: z.record(z.string(), z.enum(["accepted", "rejected"])).default({}),
 });

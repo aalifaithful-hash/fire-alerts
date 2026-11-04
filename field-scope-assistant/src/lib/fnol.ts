@@ -225,6 +225,37 @@ export function streetKey(address: string): string | null {
   return `${m[1]} ${m[2].replace(/\s+(street|st|avenue|ave|road|rd|blvd|boulevard|drive|dr|lane|ln|place|pl|court|ct|way|terrace|ter|parkway|pkwy|concourse)$/, "")}`.trim();
 }
 
+const SUFFIXES: Record<string, string> = { street: "st", st: "st", avenue: "ave", ave: "ave", road: "rd", rd: "rd", boulevard: "blvd", blvd: "blvd", drive: "dr", dr: "dr", lane: "ln", ln: "ln", place: "pl", pl: "pl", court: "ct", ct: "ct", way: "way", terrace: "ter", ter: "ter", parkway: "pkwy", pkwy: "pkwy", concourse: "concourse" };
+
+/** House number, direction, street name and suffix ("308 East 72nd Street" → 308 / e / 72 / st). */
+export function streetParts(address: string): { num: string; dir: string | null; name: string; suffix: string | null } | null {
+  const toks = address
+    .toLowerCase()
+    .replace(/\b(apt|apartment|unit|suite|ste|#)\.?\s*[0-9a-z-]+\b/g, " ")
+    .replace(/(\d+)(st|nd|rd|th)\b/g, "$1")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim()
+    .split(" ");
+  const i = toks.findIndex((t) => /^\d+[a-z]?$/.test(t));
+  if (i < 0) return null;
+  let j = i + 1;
+  const DIR: Record<string, string> = { e: "e", east: "e", w: "w", west: "w", n: "n", north: "n", s: "s", south: "s" };
+  let dir: string | null = null;
+  if (DIR[toks[j]] && toks[j + 1] && !SUFFIXES[toks[j + 1]]) dir = DIR[toks[j++]];
+  const name = toks[j];
+  if (!name) return null;
+  const suffix = SUFFIXES[toks[j + 1]] ?? null;
+  return { num: toks[i], dir, name, suffix };
+}
+
+/** Same street address? Different number, direction, name or suffix (St vs Ave) is a different place; a missing direction/suffix is tolerated. */
+export function sameStreet(a: string, b: string): boolean | null {
+  const x = streetParts(a);
+  const y = streetParts(b);
+  if (!x || !y) return null;
+  return x.num === y.num && x.name === y.name && (!x.dir || !y.dir || x.dir === y.dir) && (!x.suffix || !y.suffix || x.suffix === y.suffix);
+}
+
 function escapeRe(s: string) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }

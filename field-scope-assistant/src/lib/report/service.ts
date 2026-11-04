@@ -1,24 +1,28 @@
 import { newId } from "../ids";
 import { getProperty, updateProperty, assignmentsForProject } from "../intake";
-import { fullLabel } from "../locations";
 import { extractPageTexts, isPdf } from "../pdf";
 import * as repo from "../repo";
-import { emptyScan, type RoomScanData, type ScopeLine } from "../scan";
-import { getVisitScans, previewRoom, saveRoomScan } from "../scans";
-import { MAX_UPLOAD_BYTES, UserError, galleryAddressCheck } from "../service";
+import type { RoomScanData, ScopeLine } from "../scan";
+import { getVisitScans, previewVisit, saveRoomScan, setLineReview } from "../scans";
+import { MAX_UPLOAD_BYTES, UserError } from "../service";
 import { blobStoredPath, projectKey, putFile } from "../storage";
-import { streetKey } from "../fnol";
+import { sameStreet } from "../fnol";
 import { aiReportStatus, analyzeReport } from "./analyzer";
-import { applyChanges, proposeChanges, stillMissing, type ReportChange, type RoomTarget } from "./match";
+import { applyVisit, proposeVisit, stillMissing, type ReportChange, type VisitRoom } from "./match";
 import { FINDING_LABELS, findingText, type Finding, type ReportFindings } from "./types";
 
 /**
  * Mold report upload → rules analysis → scope proposal. Reports are stored as documents of kind
- * "mold_report" (PDF, or a photo of the report). A report whose address or name doesn't match the
- * project is held as "Wrong report?" until the PM confirms it is theirs or cancels it.
+ * "mold_report" (PDF, or a photo of the report). Statuses:
+ *  - ready: readable mold report, matches the project (or the PM confirmed it)
+ *  - needs_confirmation: address / unit / name doesn't match — "Wrong report?" until confirmed or cancelled
+ *  - wrong_type: readable, but not a mold report (e.g. a water-damage report) — never applied
+ *  - unreadable: no selectable text (photo or scan) — stored; needs AI, which is not enabled
+ *  - superseded: an earlier report replaced by a newer one
  */
 
 export const WRONG_REPORT = "Wrong report?";
+export const WRONG_TYPE = "Not a mold report?";
 
 function sniffType(bytes: Uint8Array, name: string): string | null {
   if (isPdf(bytes)) return "application/pdf";
@@ -31,21 +35,35 @@ function sniffType(bytes: Uint8Array, name: string): string | null {
   return null;
 }
 
-const lastName = (s: string | null | undefined) => (s ?? "").toLowerCase().replace(/[^a-z ]/g, " ").trim().split(/\s+/).filter((w) => w.length > 1).pop() ?? "";
+const nameWords = (s: string | null | undefined) =>
+  new Set(
+    (s ?? "")
+      .toLowerCase()
+      .replace(/[^a-z ]/g, " ")
+      .split(/\s+/)
+      .filter((w) => w.length > 2 && !["mr", "mrs", "ms", "dr", "the", "and", "family", "llc", "inc"].includes(w)),
+  );
+const unitKey = (u: string) => u.toLowerCase().replace(/[^a-z0-9]/g, "");
 
 /** Does the report's address / unit / name match this project? Returns a warning or null. */
 export function reportIdentityCheck(project: { address: string; name: string; customer: string | null }, f: ReportFindings): string | null {
   const projAddr = project.address || project.name;
   const issues: string[] = [];
-  if (f.address) {
-    const check = galleryAddressCheck(projAddr, [f.address.value]);
-    if (check.mismatch || (streetKey(f.address.value) && streetKey(projAddr) && streetKey(f.address.value) !== streetKey(projAddr))) issues.push(`address "${f.address.value}"`);
-  }
+  if (f.address && sameStreet(f.address.value, projAddr) === false) issues.push(`address "${f.address.value}"`);
   const projUnit = projAddr.match(/(?:apt\.?|apartment|unit|suite|#)\s*([0-9A-Z-]{1,8})\b/i)?.[1];
-  if (f.unit && projUnit && f.unit.value.toLowerCase() !== projUnit.toLowerCase() && !issues.length) issues.push(`unit ${f.unit.value}`);
-  if (f.customer && project.customer && lastName(f.customer.value) && lastName(f.customer.value) !== lastName(project.customer)) issues.push(`name "${f.customer.value}"`);
+  if (f.unit && projUnit && unitKey(f.unit.value) !== unitKey(projUnit) && !issues.length) issues.push(`unit ${f.unit.value}`);
+  if (f.customer && project.customer) {
+    const a = nameWords(f.customer.value);
+    const b = nameWords(project.customer);
+    if (a.size && b.size && ![...a].some((w) => b.has(w))) issues.push(`name "${f.customer.value}"`);
+  }
   if (!issues.length) return null;
   return `${WRONG_REPORT} This report states ${issues.join(" and ")}, but this project is ${projAddr}${project.customer ? ` (${project.customer})` : ""}. Confirm it is still this job's report, or cancel it.`;
+}
+
+async function supersedeOthers(projectId: string, keepId: string, filename: string) {
+  for (const d of await repo.listDocuments(projectId))
+    if (d.kind === "mold_report" && d.id !== keepId && d.status === "ready") await repo.setDocumentStatus(projectId, d.id, "superseded", `Replaced by the newer report ${filename}.`);
 }
 
 export async function ingestReport(projectId: string, file: { name: string; bytes: Uint8Array; blobUrl?: string }) {
@@ -67,18 +85,22 @@ export async function ingestReport(projectId: string, file: { name: string; byte
   const doc = await repo.createDocument(projectId, { id, filename: file.name.slice(0, 200), storedPath, size: file.bytes.length, pageCount: pages.length || (contentType === "application/pdf" ? 0 : 1) });
   if (pages.length) await repo.savePages(id, pages.map((text, i) => ({ page: i + 1, text })));
   const findings = await analyzeReport({ pages, contentType });
-  const wrong = findings.readable ? reportIdentityCheck(project, findings) : null;
-  const status = !findings.readable ? "unreadable" : wrong ? "needs_confirmation" : "ready";
+  const wrongType = findings.readable && findings.reportType !== "mold" ? `${WRONG_TYPE} This file reads like a ${findings.reportType === "water" ? "water-damage report" : "document"} with no mold growth described. Nothing from it is used for the mold scope.` : null;
+  const wrong = findings.readable && !wrongType ? reportIdentityCheck(project, findings) : null;
+  const status = !findings.readable ? "unreadable" : wrongType ? "wrong_type" : wrong ? "needs_confirmation" : "ready";
   await repo.setDocumentReport(projectId, id, { kind: "mold_report", contentType, findings });
-  await repo.setDocumentStatus(projectId, id, status, wrong);
-  return { ...doc, kind: "mold_report" as const, status, contentType, wrongReport: wrong, readable: findings.readable };
+  await repo.setDocumentStatus(projectId, id, status, wrongType ?? wrong);
+  if (status === "ready") await supersedeOthers(projectId, id, file.name);
+  return { ...doc, kind: "mold_report" as const, status, contentType, wrongReport: wrong, wrongType, readable: findings.readable };
 }
 
 export async function confirmReport(projectId: string, documentId: string) {
   const d = await repo.getDocument(projectId, documentId);
   if (d.kind !== "mold_report") throw new UserError("That file is not a mold report.");
+  if (d.status !== "needs_confirmation") throw new UserError(d.status === "wrong_type" ? "This file isn't a mold report — it can't be used. Remove it." : "Nothing to confirm on this report.");
   await repo.setDocumentReport(projectId, documentId, { confirmed: true });
   await repo.setDocumentStatus(projectId, documentId, "ready", d.error ? `Confirmed by the PM despite: ${d.error.replace(`${WRONG_REPORT} `, "")}` : null);
+  await supersedeOthers(projectId, documentId, d.filename);
   return repo.getDocument(projectId, documentId);
 }
 
@@ -87,18 +109,10 @@ async function yearBuiltOf(projectId: string) {
   return a ? { propertyId: a.propertyId, yearBuilt: (await getProperty(a.propertyId)).yearBuilt } : { propertyId: null, yearBuilt: null };
 }
 
-/** The room the report applies to: same room name, else the only room, else the "room TBD" room. */
-async function targetRoom(projectId: string, visitId: string, f: ReportFindings) {
+async function visitRooms(projectId: string, visitId: string): Promise<VisitRoom[]> {
   const view = await getVisitScans(projectId, visitId);
   const locations = await repo.listLocations(projectId);
-  const loc = (id: string) => locations.find((l) => l.id === id)!;
-  const byName = f.room ? view.rooms.find((r) => loc(r.locationId).room.toLowerCase().includes(f.room!.value.toLowerCase())) : undefined;
-  const room = byName ?? (view.rooms.length === 1 ? view.rooms[0] : view.rooms.find((r) => /room TBD/i.test(loc(r.locationId).room)));
-  if (!room) return null;
-  const { lines: _l, decisions: _d, ...data } = room.data;
-  void _l;
-  void _d;
-  return { locationId: room.locationId, label: room.label, roomName: loc(room.locationId).room, data: data as RoomScanData, lines: room.data.lines, decisions: room.data.decisions };
+  return view.rooms.map((r) => ({ locationId: r.locationId, label: r.label, roomName: locations.find((l) => l.id === r.locationId)?.room ?? r.label, scan: r.data as RoomScanData }));
 }
 
 export interface ReportPanelRow {
@@ -111,19 +125,21 @@ export interface ReportPanelRow {
 }
 
 function panelRows(f: ReportFindings): ReportPanelRow[] {
-  return FINDING_LABELS.map(([key, label]) => {
+  const rows: ReportPanelRow[] = FINDING_LABELS.map(([key, label]) => {
     const x = f[key] as Finding<unknown> | null;
     const open = f.unanswered.find((u) => u.key === key);
-    return {
-      key,
-      label,
-      value: findingText(key, f),
-      quote: x?.quote ?? open?.quote ?? null,
-      page: x?.page ?? null,
-      stated: x ? "found" : open?.quote ? "open" : "missing",
-    };
+    return { key, label, value: findingText(key, f), quote: x?.quote ?? open?.quote ?? null, page: x?.page ?? null, stated: x ? "found" : open?.quote ? "open" : "missing" };
   });
+  // multi-room reports: one row per further room
+  for (const r of f.rooms.slice(1)) {
+    const v = r.value;
+    const parts = [v.lengthFt != null ? `${v.lengthFt} × ${v.widthFt} ft${v.heightFt ? `, ${v.heightFt} ft ceiling` : ""}` : "no measurements", v.areaSF != null ? `${v.areaSF} SF` : null, v.coverage ? (v.coverage.whole ? "whole floor" : `part of the floor${v.coverage.pct != null ? ` (${v.coverage.pct}%)` : ""}`) : v.vague ? `extent only “${v.vague}”` : null, v.growth ? null : "no growth"].filter(Boolean);
+    rows.push({ key: `room:${v.name}`, label: `Room — ${v.name}`, value: parts.join(", "), quote: r.quote, page: r.page, stated: "found" });
+  }
+  return rows;
 }
+
+const qtyOf = (l: ScopeLine) => (l.quantity == null ? "no quantity" : `${l.quantity} ${l.unit}`);
 
 export async function reportView(projectId: string, visitId: string) {
   const docs = (await repo.listDocuments(projectId)).filter((d) => d.kind === "mold_report");
@@ -133,18 +149,21 @@ export async function reportView(projectId: string, visitId: string) {
   if (!active) return { reports, ai, active: null };
   const f = active.findings as ReportFindings;
   const yb = await yearBuiltOf(projectId);
-  const target = await targetRoom(projectId, visitId, f);
-  let changes: ReportChange[] = [];
-  let mismatches: string[] = [];
-  let preview: ScopeLine[] = [];
-  let applied = false;
-  if (target) {
-    const t: RoomTarget = { roomLabel: target.label, roomName: target.roomName, scan: { ...target.data, lines: [], decisions: {} } as RoomScanData, yearBuilt: yb.yearBuilt };
-    ({ changes, mismatches } = proposeChanges(f, t));
-    applied = target.data.reportDocumentId === active.id;
-    const next = applyChanges(f, t, changes.filter((c) => !c.conflict).map((c) => c.key), active.id);
-    preview = (await previewRoom(projectId, visitId, target.locationId, { ...next.scan, decisions: target.decisions }, next.roomName, next.yearBuilt ?? yb.yearBuilt, f)).lines;
-  }
+  const rooms = await visitRooms(projectId, visitId);
+  const { plans, changes, mismatches, replaced } = proposeVisit(f, rooms, yb.yearBuilt);
+  const applied = plans.every((p) => !p.target || p.target.scan.reportDocumentId === active.id) && plans.some((p) => p.target);
+  const next = applyVisit(f, plans, changes, changes.filter((c) => !c.conflict).map((c) => c.id), active.id);
+  const pv = await previewVisit(
+    projectId,
+    visitId,
+    next.rooms.map((x) => ({ locationId: x.plan.target?.locationId ?? null, roomName: x.roomName ?? x.plan.target?.roomName ?? x.plan.name, data: { ...x.scan, decisions: x.plan.target?.scan.decisions ?? {} } })),
+    next.yearBuilt ?? yb.yearBuilt,
+  );
+  const planned = new Set(next.rooms.map((x) => x.plan.target?.locationId ?? `new:${x.roomName}`));
+  const previewRooms = pv.filter((r) => planned.has(r.locationId)).map((r) => ({ locationId: r.locationId, label: r.label, lines: r.lines }));
+  const prim = next.rooms.find((x) => x.plan.primary);
+  const primaryId = prim ? (prim.plan.target?.locationId ?? `new:${prim.roomName}`) : previewRooms[0]?.locationId;
+  const runKnown = rooms.some((r) => r.scan.materials.flooring.continuousRun || r.scan.materials.flooring.breakNote);
   return {
     reports,
     ai,
@@ -152,39 +171,65 @@ export async function reportView(projectId: string, visitId: string) {
       id: active.id,
       filename: active.filename,
       findings: panelRows(f),
-      room: target ? { locationId: target.locationId, label: target.label } : null,
+      room: plans[0]?.target ? { locationId: plans[0].target.locationId, label: plans[0].target.label } : null,
+      rooms: plans.map((p) => ({ name: p.name, target: p.target?.label ?? null, isNew: !p.target, primary: p.primary, runOnly: p.runOnly })),
       applied,
       changes,
       mismatches,
-      preview,
-      stillMissing: stillMissing(f, { yearBuiltKnown: yb.yearBuilt != null, runKnown: !!(target?.data.materials.flooring.continuousRun || target?.data.materials.flooring.breakNote) }),
+      replaced,
+      preview: previewRooms.find((r) => r.locationId === primaryId)?.lines ?? [],
+      previewRooms,
+      stillMissing: stillMissing(f, { yearBuiltKnown: yb.yearBuilt != null, runKnown }),
     },
   };
 }
 
-/** Applies the report to the scan (the chosen changes only); lines come back as suggested, for the PM to accept. */
-export async function applyReport(projectId: string, visitId: string, documentId: string, keys: string[]) {
+/**
+ * Applies the chosen report changes to the visit's rooms (adding rooms the report names), then marks
+ * every line the report changed — new quantity, new item, or gone — for the PM to accept or reject again.
+ */
+export async function applyReport(projectId: string, visitId: string, documentId: string, ids: string[]) {
   const d = await repo.getDocument(projectId, documentId);
   if (d.kind !== "mold_report" || !d.findings) throw new UserError("That report has nothing to apply.");
-  if (d.status !== "ready") throw new UserError(d.status === "needs_confirmation" ? "Confirm the report is this job's first (Wrong report?)." : "This report could not be read by the rules analyzer.");
+  if (d.status !== "ready")
+    throw new UserError(
+      d.status === "needs_confirmation" ? "Confirm the report is this job's first (Wrong report?)." : d.status === "wrong_type" ? "This file isn't a mold report — nothing from it can be applied." : d.status === "superseded" ? "A newer report replaced this one." : "This report could not be read by the rules analyzer.",
+    );
   const f = d.findings as ReportFindings;
   const yb = await yearBuiltOf(projectId);
-  let target = await targetRoom(projectId, visitId, f);
-  if (!target) {
-    const visit = await repo.getVisit(projectId, visitId);
-    const loc = await repo.insertLocation(projectId, { room: f.room?.value ?? "Affected area (room TBD)" });
-    const scan = emptyScan();
-    scan.loss.type = "mold";
-    void visit;
-    await saveRoomScan(projectId, visitId, loc.id, strip(scan));
-    target = await targetRoom(projectId, visitId, f);
-    if (!target) throw new UserError("Add a room first.");
+  const before = await visitRooms(projectId, visitId);
+  const { plans, changes } = proposeVisit(f, before, yb.yearBuilt);
+  const next = applyVisit(f, plans, changes, ids, documentId);
+  const unit = (await repo.listLocations(projectId)).find((l) => l.unit)?.unit ?? null;
+  const touched: { locationId: string; prev: VisitRoom | null; replaced: string[] }[] = [];
+  for (const x of next.rooms) {
+    let locationId = x.plan.target?.locationId ?? null;
+    if (x.create || !locationId) locationId = (await repo.insertLocation(projectId, { unit, room: x.roomName ?? "Affected area (room TBD)" })).id;
+    else if (x.roomName) await repo.updateLocation(projectId, locationId, { room: x.roomName });
+    await saveRoomScan(projectId, visitId, locationId, strip(x.scan));
+    touched.push({ locationId, prev: x.plan.target, replaced: changes.filter((c) => c.room === x.plan.name && c.previousReport && ids.some((i) => i === c.id || i === c.key)).map((c) => `${c.label}: was "${c.previousReport}" (earlier report), now "${c.proposed}"`) });
   }
-  const t: RoomTarget = { roomLabel: target.label, roomName: target.roomName, scan: { ...target.data, lines: [], decisions: {} } as RoomScanData, yearBuilt: yb.yearBuilt };
-  const next = applyChanges(f, t, keys, documentId);
-  if (next.roomName) await repo.updateLocation(projectId, target.locationId, { room: next.roomName });
   if (next.yearBuilt != null && yb.propertyId) await updateProperty(yb.propertyId, { yearBuilt: next.yearBuilt });
-  await saveRoomScan(projectId, visitId, target.locationId, strip(next.scan));
+  // re-flag what the report changed in lines the PM had already decided
+  const after = await getVisitScans(projectId, visitId);
+  for (const t of touched) {
+    const now = after.rooms.find((r) => r.locationId === t.locationId);
+    if (!now || !t.prev) continue;
+    const prevLines = t.prev.scan.lines;
+    const decided = (id: string) => t.prev!.scan.decisions[id];
+    const reset: string[] = [];
+    const notes: Record<string, string> = {};
+    const summary: string[] = [...t.replaced];
+    for (const l of now.data.lines) {
+      const old = prevLines.find((p) => p.id === l.id);
+      if (old && (old.quantity !== l.quantity || old.item !== l.item) && decided(l.id)) {
+        reset.push(l.id);
+        notes[l.id] = `Changed by the mold report: was ${qtyOf(old)}${old.item !== l.item ? ` (${old.item})` : ""} — accept or reject again.`;
+      } else if (!old && Object.keys(t.prev.scan.decisions).length) notes[l.id] = "New from the mold report — accept or reject.";
+    }
+    for (const old of prevLines) if (!now.data.lines.some((l) => l.id === old.id) && decided(old.id) === "accepted") summary.push(`"${old.activity} ${old.item}" (${qtyOf(old)}, accepted before) is no longer proposed`);
+    if (reset.length || Object.keys(notes).length || summary.length) await setLineReview(projectId, visitId, t.locationId, { reset, notes, changes: summary });
+  }
   return reportView(projectId, visitId);
 }
 
@@ -195,4 +240,4 @@ function strip(s: RoomScanData) {
   return rest;
 }
 
-export { fullLabel };
+export type { ReportChange };

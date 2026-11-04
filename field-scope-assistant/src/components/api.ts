@@ -35,6 +35,13 @@ export async function api<T = unknown>(url: string, opts: { method?: string; bod
  *   size up to 200 MB and never hits the ~4.5 MB serverless body limit.
  * - otherwise: regular multipart POST through the server (local/dev setups).
  */
+/** Serverless request bodies over ~4.5 MB are rejected (413); bigger files must go straight to Blob storage. */
+export const SERVER_UPLOAD_LIMIT_BYTES = 4.4 * 1024 * 1024;
+export function uploadRoute(size: number, direct: boolean): "blob" | "server" | "too_large" {
+  if (direct) return "blob";
+  return size > SERVER_UPLOAD_LIMIT_BYTES ? "too_large" : "server";
+}
+
 export async function uploadProjectPdf<T>(
   projectId: string,
   file: File,
@@ -67,6 +74,8 @@ export async function uploadProjectPdf<T>(
     // Ingest (text extraction + page batches) runs on the server from Blob.
     return api<T>(`/api/projects/${projectId}/documents/from-blob`, { body: { url: blob.url, pathname: blob.pathname, filename: file.name, kind } });
   }
+  if (uploadRoute(file.size, false) === "too_large")
+    throw new ApiError(`This file is ${(file.size / 1024 / 1024).toFixed(1)} MB. Files over 4.4 MB need direct uploads (Vercel Blob), which aren't configured here — nothing was uploaded.`, 0, "TOO_LARGE", false);
   const form = new FormData();
   form.append("file", file);
   form.append("kind", kind);

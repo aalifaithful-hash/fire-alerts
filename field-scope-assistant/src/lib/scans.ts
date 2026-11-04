@@ -3,7 +3,7 @@ import { newId } from "./ids";
 import { assignmentsForProject, getProperty, getRules } from "./intake";
 import { fullLabel } from "./locations";
 import * as repo from "./repo";
-import { airMoverCalc, analyzeRoom, dehuCalc, type RoomAnalysis } from "./roomRules";
+import { airMoverCalc, analyzeRoom, dehuCalc, floorReplaceEffective, type RoomAnalysis } from "./roomRules";
 import { emptyScan, Exclusion, RoomScanData, type ScopeLine } from "./scan";
 import type { Category, Location, ScopeItem, VisitFacts } from "./schemas";
 import { CATEGORIES } from "./schemas";
@@ -105,7 +105,7 @@ function analyzeAll(recs: RoomScanRec[], locations: Location[], facts: VisitFact
           .map((q) => ({
             roomLabel: label(q.r.locationId),
             floorSF: q.floorSF,
-            replace: q.r.data.materials.flooring.action === "replace" || (/carpet|pad/i.test(q.r.data.materials.flooring.type ?? "") && q.r.data.loss.category === "3"),
+            replace: floorReplaceEffective(q.r.data, rules, visitServiceLine),
           }))
       : [];
     const analysis = analyzeRoom(rec.data, {
@@ -128,10 +128,16 @@ const fmtQty = (l: ScopeLine) => (l.quantity == null ? "quantity to measure" : `
 
 /** Accepted lines become scope bullets (id "ln_…"); pending reconstruction becomes notes ("lnp_…"). */
 function syncedFacts(facts: VisitFacts, analyzed: ReturnType<typeof analyzeAll>): VisitFacts {
-  const items: ScopeItem[] = facts.items.filter((i) => !i.id.startsWith("ln_") && !i.id.startsWith("lnp_") && !i.id.startsWith("lnq_"));
+  const items: ScopeItem[] = facts.items.filter((i) => !/^ln[pqh]?_/.test(i.id));
   for (const { rec, analysis } of analyzed) {
     // what can't be finalized yet (e.g. pending the mold assessment report) prints in the scope
-    analysis.pending.forEach((p, i) => items.push(scopeItem(`lnq_${rec.locationId}_${i}`, rec.locationId, "note", `Pending the mold assessment report: ${p}.`, "proposed")));
+    analysis.pending.forEach((p, i) => items.push(scopeItem(`lnq_${rec.locationId}_${i}`, rec.locationId, "note", p.startsWith("HOLD") ? `${p}.` : `Pending the mold assessment report: ${p}.`, "proposed")));
+    // hazard check prints before the demolition lines (category "condition" sorts first in the room)
+    const demo = analysis.lines.filter((l) => l.status === "accepted" && /^(Remove|Flood cut|Tear out)/i.test(l.activity) && l.flags.some((f) => HAZARD_FLAG.test(f)));
+    if (demo.length) {
+      const hz = [...new Set(demo.flatMap((l) => l.flags.filter((f) => HAZARD_FLAG.test(f))))];
+      items.push(scopeItem(`lnh_${rec.locationId}`, rec.locationId, "condition", `⚠ Before demolition: ${hz.join(" ")}`, "proposed"));
+    }
     for (const l of analysis.lines) {
       const pendingRecon = l.kind === "reconstruction" && !facts.reconstructionRequested;
       if (l.status === "excluded" || l.status === "rejected") continue;
@@ -146,6 +152,8 @@ function syncedFacts(facts: VisitFacts, analyzed: ReturnType<typeof analyzeAll>)
   }
   return { ...facts, items };
 }
+
+const HAZARD_FLAG = /lead-safe|Year built unknown|asbestos/i;
 
 function scopeItem(id: string, locationId: string, category: Category, text: string, status: ScopeItem["status"], flags: string[] = []): ScopeItem {
   return { id, locationId, needsLocation: false, category, text, status, source: "manual_edit", evidenceIds: [], carriedForward: false, carriedFromVisitId: null, quantity: null, flags };
@@ -210,6 +218,7 @@ export async function getVisitScans(projectId: string, visitId: string): Promise
     { ok: allLines.length === 0 || decided === allLines.filter((l) => l.status !== "excluded").length, text: "Every suggested line accepted or rejected" },
     { ok: visit.facts.exclusions.every((e) => e.signature === "signed"), text: "Exclusions have a signed customer declination" },
     { ok: analyzed.every((a) => a.rec.data.moisturePoints.length > 0 || a.rec.data.loss.type !== "water"), text: "Moisture points mapped in water rooms" },
+    { ok: analyzed.every((a) => a.rec.data.loss.type !== "mold" || a.rec.data.source.status === "repaired" || a.rec.data.source.status === "stopped"), text: "Mold: moisture source confirmed fixed (remediation can't be finalized otherwise)" },
   ];
 
   return {
@@ -307,11 +316,13 @@ export async function decideLines(projectId: string, visitId: string, locationId
   const rec = (await rows(projectId, visitId)).find((r) => r.locationId === locationId);
   if (!rec) throw new repo.NotFound("Room scan not found.");
   const decisions = { ...rec.data.decisions };
+  const lineNotes = { ...rec.data.lineNotes };
   for (const id of lineIds) {
     if (action === "reset") delete decisions[id];
     else decisions[id] = action === "accept" ? "accepted" : "rejected";
+    if (action !== "reset") delete lineNotes[id]; // the PM has now decided on the changed line
   }
-  await writeScan(projectId, visitId, locationId, { ...rec.data, decisions });
+  await writeScan(projectId, visitId, locationId, { ...rec.data, decisions, lineNotes });
   await persistAndSync(projectId, visitId, `${action === "accept" ? "Accepted" : action === "reject" ? "Rejected" : "Reset"} ${lineIds.length} line(s).`);
   return getVisitScans(projectId, visitId);
 }
@@ -368,6 +379,40 @@ function exclusionText(e: Exclusion, rules: Rules, locations: Location[]): strin
     return `${l ? fullLabel(l) : "Room"} excluded from this scope (${e.date}, decided by ${who}). Reason: ${e.reason}.`;
   }
   return `${(e.serviceLine ?? "Service line").replace(/^\w/, (c) => c.toUpperCase())} excluded from this scope (${e.date}, decided by ${who}). Reason: ${e.reason}.`;
+}
+
+/**
+ * Runs the rules on the whole visit as it would be with `overrides` (rooms changed or added by a
+ * report), without saving anything. New rooms use `new:<name>` as their id. Returns lines per room.
+ */
+export async function previewVisit(projectId: string, visitId: string, overrides: { locationId: string | null; roomName: string; data: RoomScanData }[], yearBuilt: number | null) {
+  const [recs, locations, visit, rules] = await Promise.all([rows(projectId, visitId), repo.listLocations(projectId), repo.getVisit(projectId, visitId), getRules()]);
+  const locs: Location[] = locations.map((l) => {
+    const o = overrides.find((x) => x.locationId === l.id);
+    return o ? { ...l, room: o.roomName } : l;
+  });
+  const all: RoomScanRec[] = recs.map((r) => {
+    const o = overrides.find((x) => x.locationId === r.locationId);
+    return o ? { ...r, data: o.data } : r;
+  });
+  const unit = locations.find((l) => l.unit)?.unit ?? null;
+  for (const o of overrides.filter((x) => !x.locationId || !recs.some((r) => r.locationId === x.locationId))) {
+    const id = o.locationId ?? `new:${o.roomName}`;
+    if (!locs.some((l) => l.id === id)) locs.push({ id, floor: null, unit, room: o.roomName } as Location);
+    all.push({ id: `scn_${id}`, locationId: id, data: o.data, updatedAt: "" });
+  }
+  const analyzed = analyzeAll(all, locs, visit.facts, rules, yearBuilt, visit.serviceLine, await reportsFor(projectId, all));
+  return analyzed.map(({ rec, analysis }) => ({ locationId: rec.locationId, label: fullLabel(locs.find((l) => l.id === rec.locationId)!), lines: analysis.lines, pending: analysis.pending }));
+}
+
+/** Writes PM-review state on one room (decisions reset, line notes, change summary) and re-syncs. */
+export async function setLineReview(projectId: string, visitId: string, locationId: string, review: { reset: string[]; notes: Record<string, string>; changes: string[] }) {
+  const rec = (await rows(projectId, visitId)).find((r) => r.locationId === locationId);
+  if (!rec) return;
+  const decisions = { ...rec.data.decisions };
+  for (const id of review.reset) delete decisions[id];
+  await writeScan(projectId, visitId, locationId, { ...rec.data, decisions, lineNotes: { ...rec.data.lineNotes, ...review.notes }, reportChanges: review.changes });
+  await persistAndSync(projectId, visitId, "Mold report changes marked for review.");
 }
 
 /** Runs the room rules on a scan without saving it (report preview). */

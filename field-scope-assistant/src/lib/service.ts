@@ -20,7 +20,7 @@ import {
 import { todayNY, weekdayNY } from "./time";
 import type { DraftVersion, Project, Visit } from "./types";
 import { aiAvailable, AiNotConfiguredError, maxInlineBytes } from "./ai/provider";
-import { findStreetAddresses, streetKey } from "./fnol";
+import { findStreetAddresses, sameStreet } from "./fnol";
 
 export const ADDRESS_MISMATCH = "Address mismatch:";
 
@@ -30,9 +30,8 @@ export const ADDRESS_MISMATCH = "Address mismatch:";
  */
 export function galleryAddressCheck(projectAddress: string, pages: string[]): { found: string[]; mismatch: string | null } {
   const found = findStreetAddresses(pages.slice(0, 3).join("\n")).slice(0, 3);
-  const mine = streetKey(projectAddress);
-  if (!found.length || !mine) return { found, mismatch: null };
-  if (found.some((a) => streetKey(a) === mine)) return { found, mismatch: null };
+  if (!found.length || sameStreet(projectAddress, projectAddress) == null) return { found, mismatch: null };
+  if (found.some((a) => sameStreet(a, projectAddress) !== false)) return { found, mismatch: null };
   return {
     found,
     mismatch: `${ADDRESS_MISMATCH} this PDF is labeled "${found[0]}", but this project is ${projectAddress}. Check you uploaded the right gallery — its photos are not assigned to rooms until you confirm.`,
