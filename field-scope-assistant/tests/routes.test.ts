@@ -119,6 +119,16 @@ describe("direct Blob upload routes (issue 3)", () => {
     expect((await ask(`projects/${p.id}/notes.txt`)).status).toBe(400);
   });
 
+  it("a mold report photo gets a token on the same Blob path (images allowed; other types still refused)", async () => {
+    process.env.BLOB_READ_WRITE_TOKEN = TOKEN;
+    const p = await repo.createProject({ address: "24 Blob St" });
+    const ask = (pathname: string) =>
+      call(blobTokenRoute.POST as Handler<{ pid: string }>, "POST", { pid: p.id }, { type: "blob.generate-client-token", payload: { pathname, multipart: false, clientPayload: null } });
+    for (const ext of ["jpg", "jpeg", "png", "heic", "webp"]) expect((await ask(`projects/${p.id}/mold-report.${ext}`)).status, ext).toBe(200);
+    expect((await ask(`projects/${p.id}/mold-report.exe`)).status).toBe(400);
+    expect((await ask(`projects/${p.id}/notes.txt`)).status).toBe(400);
+  });
+
   it("returns a clear error when Blob is not configured", async () => {
     const p = await repo.createProject({ address: "22 Blob St" });
     const r = await call(blobTokenRoute.POST as Handler<{ pid: string }>, "POST", { pid: p.id }, {

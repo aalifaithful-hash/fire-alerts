@@ -222,6 +222,16 @@ describe("report upload, wrong report, apply → scope (Test 1)", () => {
     expect(room2.data.lines.find((l) => l.id === "mold.floor.remove")?.quantity).toBe(96);
   });
 
+  it("a report uploaded to Blob is ingested from its Blob URL (no copy), analyzed and stored as a mold report", async () => {
+    const q = await quickStart(TEST1);
+    const url = `https://teststore123.private.blob.vercel-storage.com/projects/${q.projectId}/sample-mold-report-308-E-72nd-St-4D-x1.pdf`;
+    const d = await ingestReport(q.projectId, { name: "sample-mold-report-308-E-72nd-St-4D.pdf", bytes: A, blobUrl: url });
+    const stored = await repo.getDocument(q.projectId, d.id);
+    expect(stored.storedPath).toBe(`blob:${url}`);
+    expect([stored.kind, stored.status, stored.contentType]).toEqual(["mold_report", "ready", "application/pdf"]);
+    expect((stored.findings as { affectedAreaSF: { value: number } }).affectedAreaSF.value).toBe(96);
+  });
+
   it("a photo of the report is stored (same upload route) and shows the AI-not-enabled state", async () => {
     const q = await quickStart(TEST1);
     const jpg = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, ...new Array(200).fill(0)]);
