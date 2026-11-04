@@ -26,6 +26,8 @@ export function visitSystem(type: VisitType) {
       "Initial assessment: record affected conditions per room, cause of loss and source status, and what needs to happen next (category 'schedule' for next steps).",
     initial_mitigation:
       "Initial mitigation scope: per room, the work the PM asked for, in order: water extraction, material removal or detach/reset, cavity access, cleaning/HEPA vacuuming, antimicrobial, contents manipulation/protection, floor protection, containment, equipment placement and drying. Only services that apply to that room. Equipment quantities only as supplied, with status planned or installed as stated.",
+    mold_remediation:
+      "Mold remediation scope (IICRC S520): per room, containment, negative air, PPE, removal of porous/semi-porous materials with growth, cleaning of what stays (HEPA vacuum, wire-brush/sand, damp-wipe), antimicrobial, disposal, and post-remediation verification by an independent assessor. Follow the assessor's protocol when one is in the record; if not, list what is pending it. Do not add water extraction or drying unless the PM reports active moisture.",
     kickoff:
       "Kickoff / crew work update: what the crew is doing, per room, with statuses scheduled / in_progress / completed exactly as the PM said.",
     daily_monitoring:

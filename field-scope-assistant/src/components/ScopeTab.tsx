@@ -29,6 +29,7 @@ interface Props {
   openEvidence: (id: string) => void;
   aiReady: boolean;
   goPhotos: () => void;
+  goScan?: () => void;
 }
 
 export default function ScopeTab(p: Props) {
@@ -46,11 +47,16 @@ export default function ScopeTab(p: Props) {
   const notes = notesSave.value;
   const loadNotes = notesSave.load;
 
+  // proposed room-scan lines still waiting for the PM's OK (so the scope never looks empty for no reason)
+  const [waiting, setWaiting] = useState<{ lines: number; rooms: number } | null>(null);
   const load = useCallback(async () => {
     if (!visitId) return setData(null);
     const d = await api<VisitData>(base);
     setData(d);
     loadNotes(d.visit.fieldNotes);
+    api<{ rooms: { data: { lines: { status: string }[] } }[] }>(`${base}/scans`)
+      .then((sv) => setWaiting({ lines: sv.rooms.reduce((a, r) => a + r.data.lines.filter((l) => l.status === "suggested").length, 0), rooms: sv.rooms.length }))
+      .catch(() => setWaiting(null));
   }, [base, visitId, loadNotes]);
 
   useEffect(() => {
@@ -341,6 +347,16 @@ export default function ScopeTab(p: Props) {
 
       {/* Scope document */}
       <h2 id="scope-doc">Scope</h2>
+      {waiting && waiting.lines > 0 && p.goScan && (
+        <div className="card warn stack" style={{ marginBottom: 10 }}>
+          <div>
+            <strong>{waiting.lines} proposed line{waiting.lines === 1 ? "" : "s"}</strong> from the room scan {waiting.lines === 1 ? "is" : "are"} waiting for your OK. Accepted lines appear in this scope automatically.
+          </div>
+          <button className="btn primary" onClick={p.goScan}>
+            Review proposed lines
+          </button>
+        </div>
+      )}
       {!v.doc && !v.manualText ? (
         <div className="card stack">
           <div className="muted">

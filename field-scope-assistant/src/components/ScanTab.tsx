@@ -11,7 +11,7 @@ type Props = { ws: WorkspaceData; projectId: string; visitId: string | null; rel
 
 const blank = (): Editable => ({
   source: { where: "unknown", fixture: null, wall: null, positionFt: null, surface: null, status: "unknown", hoursSinceLoss: null, waterSource: null },
-  loss: { type: null, category: null, waterClass: null, smokeType: null },
+  loss: { type: null, category: null, waterClass: null, smokeType: null, assessmentReport: null },
   materials: {
     flooring: { type: null, affected: false, affectedPct: null, action: null, continuousRun: null, breakNote: null },
     baseboard: { affected: false, walls: [], action: null },
@@ -183,6 +183,7 @@ export default function ScanTab({ ws, projectId, visitId, reload, flash }: Props
               <Sel label="Loss type" value={f.loss.type ?? ""} onChange={(v) => upd((d) => (d.loss.type = (v || null) as Editable["loss"]["type"]))} options={[["", "—"], ["water", "Water"], ["sewage", "Sewage"], ["fire", "Fire"], ["smoke", "Smoke"], ["mold", "Mold"]]} />
               {water && <Sel label="Water category (as you confirm it)" value={f.loss.category ?? ""} onChange={(v) => upd((d) => (d.loss.category = (v || null) as Editable["loss"]["category"]))} options={[["", "Not confirmed"], ["1", "Category 1"], ["2", "Category 2"], ["3", "Category 3"]]} />}
               {water && <Sel label="Class" value={f.loss.waterClass ?? ""} onChange={(v) => upd((d) => (d.loss.waterClass = (v || null) as Editable["loss"]["waterClass"]))} options={[["", "—"], ["1", "Class 1"], ["2", "Class 2"], ["3", "Class 3"], ["4", "Class 4"]]} />}
+              {f.loss.type === "mold" && <Sel label="Mold assessment report" value={f.loss.assessmentReport ?? ""} onChange={(v) => upd((d) => (d.loss.assessmentReport = (v || null) as Editable["loss"]["assessmentReport"]))} options={[["", "—"], ["pending", "Pending (not received yet)"], ["received", "Received"], ["none", "None"]]} />}
               {(f.loss.type === "fire" || f.loss.type === "smoke") && <Sel label="Smoke type" value={f.loss.smokeType ?? ""} onChange={(v) => upd((d) => (d.loss.smokeType = (v || null) as Editable["loss"]["smokeType"]))} options={[["", "—"], ["dry", "Dry smoke"], ["wet", "Wet smoke"], ["protein", "Protein smoke"]]} />}
             </div>
           </div>
@@ -322,6 +323,16 @@ export default function ScanTab({ ws, projectId, visitId, reload, flash }: Props
                   {n}
                 </div>
               ))}
+              {room.analysis.pending.length > 0 && (
+                <div className="card warn small" style={{ marginTop: 8 }}>
+                  <strong>Pending the mold assessment report — can&apos;t finalize yet:</strong>
+                  <ul style={{ paddingLeft: 18, margin: "4px 0 0" }}>
+                    {room.analysis.pending.map((x, i) => (
+                      <li key={i}>{x}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
               {room.analysis.questions.length > 0 && (
                 <div className="card small" style={{ marginBottom: 8 }}>
                   <strong>To complete this room:</strong>

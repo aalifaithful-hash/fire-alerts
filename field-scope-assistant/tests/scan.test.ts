@@ -110,7 +110,7 @@ describe("room analysis: quantities with the math shown", () => {
     const a = analyzeRoom(s, ctx());
     expect(line(a, "extract")!.quantity).toBeNull();
     expect(line(a, "extract")!.flags).toContain("Quantity needs measurements.");
-    expect(a.questions[0]).toMatch(/enter length and width/);
+    expect(a.questions[0]).toMatch(/measure length, width and ceiling height/);
   });
 
   it("category-change flag never changes the category itself", () => {

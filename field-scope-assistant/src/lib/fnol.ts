@@ -7,11 +7,12 @@ import { DEFAULT_RULES, type Rules } from "./defaults";
  * reviews and edits the result before saving.
  */
 
-export const SERVICE_LINES = ["ems", "mitigation", "reconstruction", "contents"] as const;
+export const SERVICE_LINES = ["ems", "mitigation", "mold", "reconstruction", "contents"] as const;
 export type ServiceLine = (typeof SERVICE_LINES)[number];
 export const SERVICE_LINE_LABELS: Record<ServiceLine, string> = {
   ems: "EMS (emergency services)",
   mitigation: "Mitigation",
+  mold: "Mold remediation",
   reconstruction: "Reconstruction",
   contents: "Contents cleaning",
 };
@@ -200,6 +201,24 @@ function streetLine(text: string): Found<string> | null {
   return null;
 }
 
+/** Every street address that appears in a block of text (e.g. a CompanyCam gallery header), one per line. */
+export function findStreetAddresses(text: string): string[] {
+  const out: string[] = [];
+  for (const raw of text.split(/\r?\n/)) {
+    const f = streetLine(raw);
+    if (f && !out.includes(f.value)) out.push(f.value);
+  }
+  return out;
+}
+
+/** "429 E 52nd St, Apt 5C, New York" → "429 e 52 st" (house number + street only), for comparing addresses. */
+export function streetKey(address: string): string | null {
+  const k = addressKey(address);
+  const m = k.match(/^(\d+[a-z]?)\s+((?:[nsew]\s+)?(?:\d+|[a-z]+)(?:\s+[a-z]+)?)/);
+  if (!m) return null;
+  return `${m[1]} ${m[2].replace(/\s+(street|st|avenue|ave|road|rd|blvd|boulevard|drive|dr|lane|ln|place|pl|court|ct|way|terrace|ter|parkway|pkwy|concourse)$/, "")}`.trim();
+}
+
 function escapeRe(s: string) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
@@ -267,6 +286,7 @@ export function parseFnol(rawText: string, rules: Rules = DEFAULT_RULES): FnolPa
   };
   add("ems", k.ems);
   add("mitigation", k.mitigation);
+  add("mold", k.mold);
   add("reconstruction", k.reconstruction);
   add("contents", k.contents);
   const contentsOnlyHit = keyword(hay, k.contentsOnly);
@@ -449,6 +469,7 @@ export function outputTypeFor(lines: ServiceLine[], stage: VisitStage, contentsO
   if (stage === "kickoff") return "kickoff" as const;
   if (contentsOnly || (lines.length === 1 && lines[0] === "contents")) return "contents_cleaning" as const;
   if (lines.length && lines.every((l) => l === "reconstruction")) return "reconstruction" as const;
+  if (lines.includes("mold")) return "mold_remediation" as const;
   if (lines.includes("ems") || lines.includes("mitigation")) return "initial_mitigation" as const;
   if (lines.includes("reconstruction")) return "reconstruction" as const;
   return "initial_assessment" as const;

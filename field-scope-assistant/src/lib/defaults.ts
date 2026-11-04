@@ -132,7 +132,30 @@ const Hazards = z.object({
   asbestosNote: z.string(),
 });
 
+// ---------------------------------------------------------------------------
+// Mold remediation (IICRC S520 practice; NY licensing). Starting points — the
+// licensed assessor's protocol (mold report) governs and overrides them.
+// ---------------------------------------------------------------------------
+const MoldRules = z.object({
+  /** Porous / semi-porous materials with growth are removed, not cleaned (S520). Matched against the material name. */
+  removeWhenGrowth: z.array(z.string()),
+  containment: z.object({ enabled: z.boolean(), description: z.string() }),
+  negativeAirPerContainment: z.number().int().nonnegative(),
+  dehumidifierPerContainment: z.number().int().nonnegative(),
+  ppeDescription: z.string(),
+  /** Cleaning sequence for structure left in place (subfloor, framing). */
+  cleaningSteps: z.array(z.string()),
+  antimicrobialAfterCleaning: z.boolean(),
+  /** Remove baseboard to reach the edge of flooring being removed; wood baseboard in contact with growth is discarded. */
+  removeBaseboardWithFlooring: z.boolean(),
+  postRemediationVerification: z.boolean(),
+  /** NY: projects above this area need a licensed assessor's plan, a licensed remediator and independent clearance. */
+  licensedThresholdSF: z.number().nonnegative(),
+  licensingNote: z.string(),
+});
+
 const FnolKeywords = z.object({
+  mold: z.array(z.string()),
   ems: z.array(z.string()),
   mitigation: z.array(z.string()),
   reconstruction: z.array(z.string()),
@@ -155,6 +178,7 @@ export const RulesSchema = z.object({
   categoryChange: CategoryChange,
   programs: z.array(Program),
   hazards: Hazards,
+  mold: MoldRules,
   fnolKeywords: FnolKeywords,
 });
 export type Rules = z.infer<typeof RulesSchema>;
@@ -246,7 +270,22 @@ export const DEFAULT_RULES: Rules = {
     asbestosNote:
       "Asbestos survey/clearance required before demolition where local rules apply (e.g. NYC requires an asbestos investigation before most demolition).",
   },
+  mold: {
+    removeWhenGrowth: ["carpet", "pad", "wood", "hardwood", "engineered", "laminate", "parquet", "underlayment", "drywall", "insulation", "ceiling tile"],
+    containment: { enabled: true, description: "6 mil poly containment with zipper door, sealed seams and decon/entry chamber" },
+    negativeAirPerContainment: 1,
+    dehumidifierPerContainment: 1,
+    ppeDescription: "PPE: disposable coveralls, half/full-face respirator with P100 cartridges, gloves, eye protection",
+    cleaningSteps: ["HEPA vacuum", "Wire-brush / sand remaining growth", "HEPA vacuum", "Damp-wipe"],
+    antimicrobialAfterCleaning: true,
+    removeBaseboardWithFlooring: true,
+    postRemediationVerification: true,
+    licensedThresholdSF: 10,
+    licensingNote:
+      "NY: mold work over 10 SF needs a licensed mold assessor's remediation plan, a licensed remediation contractor (not the assessor) and independent post-remediation clearance (NYS Labor Law Art. 32). NYC buildings with 10+ units: Local Law 61 work practices.",
+  },
   fnolKeywords: {
+    mold: ["mold", "mould", "microbial", "mold remediation", "mold scope", "fungal growth"],
     ems: ["ems", "emergency service", "emergency services", "emergency mitigation", "emergency response", "water out", "board up", "board-up", "24 hour emergency"],
     mitigation: ["mitigation", "water mitigation", "dry out", "dryout", "drying", "extraction", "wtr", "dehu", "remediation"],
     reconstruction: ["reconstruction", "rebuild", "recon", "build back", "build-back", "repairs", "structural repair", "restoration repair"],
@@ -295,5 +334,6 @@ export const RULE_SECTION_LABELS: Record<RulesSection, string> = {
   categoryChange: "Category-change flag",
   programs: "Program deadlines",
   hazards: "Hazard checks",
+  mold: "Mold remediation (S520 / NY licensing)",
   fnolKeywords: "FNOL keywords (parser)",
 };

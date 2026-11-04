@@ -6,6 +6,7 @@ import SetupBanner from "./SetupBanner";
 import { api } from "./api";
 import { useStatus } from "./useStatus";
 import type { Project } from "@/lib/types";
+import { QUICK_JOBS, QUICK_JOB_LABELS, type QuickJob } from "@/lib/quickJobs";
 
 type Row = Project & { visitCount: number; lastVisit: string | null };
 
@@ -15,8 +16,9 @@ export default function ProjectList() {
   const [q, setQ] = useState("");
   const [rows, setRows] = useState<Row[] | null>(null);
   const [creating, setCreating] = useState(false);
-  const [form, setForm] = useState({ address: "", customer: "", claimNumber: "" });
+  const [form, setForm] = useState({ address: "", unit: "", customer: "", phone: "", job: "" as QuickJob | "", appointmentTime: "", notes: "" });
   const [err, setErr] = useState("");
+  const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     const t = setTimeout(() => {
@@ -25,13 +27,16 @@ export default function ProjectList() {
     return () => clearTimeout(t);
   }, [q]);
 
+  // One tap: property, assignment, project, visit and a first room scan from the notes → straight to the proposed lines.
   const create = async () => {
     setErr("");
+    setBusy(true);
     try {
-      const r = await api<{ project: Project }>("/api/projects", { body: { ...form, name: form.address } });
-      router.push(`/projects/${r.project.id}`);
+      const r = await api<{ projectId: string; visitId: string }>("/api/quickstart", { body: form });
+      router.push(`/projects/${r.projectId}?visit=${r.visitId}&tab=scan`);
     } catch (e) {
       setErr((e as Error).message);
+      setBusy(false);
     }
   };
 
@@ -49,30 +54,53 @@ export default function ProjectList() {
               Paste an FNOL (new assignment)
             </a>
             <button className="btn big" onClick={() => setCreating(true)}>
-              + New project without an FNOL
+              + Quick start without an FNOL
             </button>
           </div>
         ) : (
           <div className="card stack">
-            <h3 style={{ marginTop: 0 }}>New project</h3>
+            <h3 style={{ marginTop: 0 }}>Quick start — no FNOL</h3>
             <label className="field">
               <span>Property address *</span>
-              <input className="in" autoFocus value={form.address} onChange={(e) => setForm({ ...form, address: e.target.value })} placeholder="123 Main St, Apt 4B, New York, NY" />
+              <input className="in" autoFocus value={form.address} onChange={(e) => setForm({ ...form, address: e.target.value })} placeholder="123 Main St, New York, NY 10001" aria-label="Property address" />
             </label>
             <div className="grid2">
               <label className="field">
-                <span>Customer</span>
-                <input className="in" value={form.customer} onChange={(e) => setForm({ ...form, customer: e.target.value })} />
+                <span>Unit</span>
+                <input className="in" value={form.unit} onChange={(e) => setForm({ ...form, unit: e.target.value })} placeholder="4D" aria-label="Unit" />
               </label>
               <label className="field">
-                <span>Claim #</span>
-                <input className="in" value={form.claimNumber} onChange={(e) => setForm({ ...form, claimNumber: e.target.value })} />
+                <span>Visit time</span>
+                <input className="in" type="time" value={form.appointmentTime} onChange={(e) => setForm({ ...form, appointmentTime: e.target.value })} aria-label="Visit time" />
+              </label>
+              <label className="field">
+                <span>Customer</span>
+                <input className="in" value={form.customer} onChange={(e) => setForm({ ...form, customer: e.target.value })} aria-label="Customer" />
+              </label>
+              <label className="field">
+                <span>Phone</span>
+                <input className="in" type="tel" value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} aria-label="Phone" />
               </label>
             </div>
-            <p className="small muted">Everything else is optional — add it later or let your notes fill it in.</p>
+            <div>
+              <div style={{ fontWeight: 600, fontSize: 13, color: "var(--muted)" }}>Kind of job *</div>
+              <div className="row" style={{ marginTop: 6 }} role="group" aria-label="Kind of job">
+                {QUICK_JOBS.map((j) => (
+                  <button key={j} type="button" className={`btn sm ${form.job === j ? "on" : ""}`} aria-pressed={form.job === j} onClick={() => setForm({ ...form, job: j })}>
+                    {form.job === j ? "✓ " : ""}
+                    {QUICK_JOB_LABELS[j]}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <label className="field">
+              <span>Notes (what you know so far)</span>
+              <textarea className="in" style={{ minHeight: 80 }} value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} placeholder="e.g. Mold under wood flooring in the bedroom. Mold report to follow." aria-label="Notes" />
+            </label>
+            <p className="small muted">Builds the first scope lines from your notes right away (rules, not AI). Measurements and room details come next.</p>
             <div className="row">
-              <button className="btn primary grow" disabled={!form.address.trim()} onClick={create}>
-                Create and open
+              <button className="btn primary grow big" disabled={busy || !form.address.trim() || !form.job} onClick={create}>
+                {busy ? "Building scope…" : "Start scope"}
               </button>
               <button className="btn ghost" onClick={() => setCreating(false)}>
                 Cancel

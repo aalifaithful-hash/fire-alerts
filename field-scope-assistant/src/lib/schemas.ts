@@ -10,6 +10,7 @@ import { Exclusion } from "./scan";
 export const VISIT_TYPES = [
   "initial_assessment",
   "initial_mitigation",
+  "mold_remediation",
   "kickoff",
   "daily_monitoring",
   "final_walkthrough",
@@ -22,6 +23,7 @@ export type VisitType = (typeof VISIT_TYPES)[number];
 export const VISIT_TYPE_LABELS: Record<VisitType, string> = {
   initial_assessment: "Initial assessment",
   initial_mitigation: "Initial mitigation scope",
+  mold_remediation: "Mold remediation scope",
   kickoff: "Kickoff / crew work update",
   daily_monitoring: "Daily monitoring",
   final_walkthrough: "Final walk-through / completed mitigation",

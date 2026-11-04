@@ -111,8 +111,10 @@ const fmtQty = (l: ScopeLine) => (l.quantity == null ? "quantity to measure" : `
 
 /** Accepted lines become scope bullets (id "ln_…"); pending reconstruction becomes notes ("lnp_…"). */
 function syncedFacts(facts: VisitFacts, analyzed: ReturnType<typeof analyzeAll>): VisitFacts {
-  const items: ScopeItem[] = facts.items.filter((i) => !i.id.startsWith("ln_") && !i.id.startsWith("lnp_"));
-  for (const { rec, analysis } of analyzed)
+  const items: ScopeItem[] = facts.items.filter((i) => !i.id.startsWith("ln_") && !i.id.startsWith("lnp_") && !i.id.startsWith("lnq_"));
+  for (const { rec, analysis } of analyzed) {
+    // what can't be finalized yet (e.g. pending the mold assessment report) prints in the scope
+    analysis.pending.forEach((p, i) => items.push(scopeItem(`lnq_${rec.locationId}_${i}`, rec.locationId, "note", `Pending the mold assessment report: ${p}.`, "proposed")));
     for (const l of analysis.lines) {
       const pendingRecon = l.kind === "reconstruction" && !facts.reconstructionRequested;
       if (l.status === "excluded" || l.status === "rejected") continue;
@@ -124,6 +126,7 @@ function syncedFacts(facts: VisitFacts, analyzed: ReturnType<typeof analyzeAll>)
       const cat = (CATEGORY_SET.has(l.scopeCategory) ? l.scopeCategory : "note") as Category;
       items.push(scopeItem(`ln_${rec.locationId}_${l.id}`, rec.locationId, cat, `${l.activity} ${l.item} — ${fmtQty(l)}`, "proposed", l.flags.filter((f) => !f.startsWith("Pending reconstruction"))));
     }
+  }
   return { ...facts, items };
 }
 

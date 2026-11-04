@@ -47,6 +47,8 @@ export const ScanLoss = z.object({
   category: z.enum(["1", "2", "3"]).nullable().default(null), // only as the PM states it
   waterClass: z.enum(["1", "2", "3", "4"]).nullable().default(null),
   smokeType: z.enum(["dry", "wet", "protein"]).nullable().default(null),
+  /** Mold: the licensed assessor's report / remediation protocol. */
+  assessmentReport: z.enum(["none", "pending", "received"]).nullable().default(null),
 });
 
 export const ScanMaterials = z.object({

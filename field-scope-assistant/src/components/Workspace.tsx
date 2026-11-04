@@ -42,6 +42,11 @@ export default function Workspace({ projectId }: { projectId: string }) {
       const fromUrl = new URLSearchParams(window.location.search).get("visit");
       const latest = d.visits.at(-1)?.id ?? null;
       setVisitId(fromUrl && d.visits.some((v) => v.id === fromUrl) ? fromUrl : latest);
+      const tabFromUrl = new URLSearchParams(window.location.search).get("tab") as Tab | null;
+      if (tabFromUrl && TABS.includes(tabFromUrl)) {
+        setTab(tabFromUrl);
+        return;
+      }
       try {
         const t = localStorage.getItem(`fsa-tab-${projectId}`) as Tab | null;
         if (t && TABS.includes(t)) setTab(t);
@@ -93,7 +98,7 @@ export default function Workspace({ projectId }: { projectId: string }) {
       </nav>
       <main className="page">
         {status && !status.aiConfigured && tab !== "info" && <SetupBanner />}
-        {tab === "scope" && <ScopeTab {...common} visitId={visitId} openVisit={openVisit} aiReady={!!status?.aiConfigured} goPhotos={() => pickTab("photos")} />}
+        {tab === "scope" && <ScopeTab {...common} visitId={visitId} openVisit={openVisit} aiReady={!!status?.aiConfigured} goPhotos={() => pickTab("photos")} goScan={() => pickTab("scan")} />}
         {tab === "scan" && <ScanTab {...common} visitId={visitId} />}
         {tab === "photos" && <PhotosTab {...common} aiReady={!!status?.aiConfigured} blobReady={status ? !!status.blobUploads : null} />}
         {tab === "rooms" && <RoomsTab {...common} />}

@@ -20,6 +20,24 @@ import {
 import { todayNY, weekdayNY } from "./time";
 import type { DraftVersion, Project, Visit } from "./types";
 import { aiAvailable, AiNotConfiguredError, maxInlineBytes } from "./ai/provider";
+import { findStreetAddresses, streetKey } from "./fnol";
+
+export const ADDRESS_MISMATCH = "Address mismatch:";
+
+/**
+ * A CompanyCam gallery prints its project address. If the PDF names a different street
+ * address than this project, say so plainly — never attach someone else's photos silently.
+ */
+export function galleryAddressCheck(projectAddress: string, pages: string[]): { found: string[]; mismatch: string | null } {
+  const found = findStreetAddresses(pages.slice(0, 3).join("\n")).slice(0, 3);
+  const mine = streetKey(projectAddress);
+  if (!found.length || !mine) return { found, mismatch: null };
+  if (found.some((a) => streetKey(a) === mine)) return { found, mismatch: null };
+  return {
+    found,
+    mismatch: `${ADDRESS_MISMATCH} this PDF is labeled "${found[0]}", but this project is ${projectAddress}. Check you uploaded the right gallery — its photos are not assigned to rooms until you confirm.`,
+  };
+}
 import { ai } from "./ai/features";
 import { AnalysisOutput, PdfBatchOutput } from "./ai/schemas";
 
@@ -37,7 +55,7 @@ export const MAX_UPLOAD_BYTES = 200 * 1024 * 1024;
  * page batches for AI analysis.
  */
 export async function ingestPdf(projectId: string, file: { name: string; bytes: Uint8Array; blobUrl?: string }) {
-  await repo.getProject(projectId);
+  const project = await repo.getProject(projectId);
   if (!isPdf(file.bytes)) throw new UserError("That file is not a PDF.");
   if (file.bytes.length > MAX_UPLOAD_BYTES) throw new UserError("PDF is larger than 200 MB.");
   const id = newId("doc");
@@ -61,9 +79,10 @@ export async function ingestPdf(projectId: string, file: { name: string; bytes: 
   const doc = await repo.createDocument(projectId, { id, filename: file.name.slice(0, 200), storedPath, size: file.bytes.length, pageCount });
   await repo.savePages(id, pages.map((text, i) => ({ page: i + 1, text })));
   await repo.createBatches(projectId, id, planBatches(pageCount));
-  await repo.setDocumentStatus(projectId, id, "processing", extractError);
+  const check = galleryAddressCheck(project.address || project.name, [file.name.replace(/[_-]+/g, " "), ...pages]);
+  await repo.setDocumentStatus(projectId, id, "processing", [check.mismatch, extractError].filter(Boolean).join(" ") || null);
   const scanned = pages.filter((t) => t.replace(/\s/g, "").length < SCANNED_THRESHOLD).length;
-  return { ...doc, scannedPages: scanned };
+  return { ...doc, scannedPages: scanned, addressMismatch: check.mismatch, galleryAddresses: check.found };
 }
 
 /**
@@ -130,6 +149,7 @@ ${pageText}
 
 export async function saveBatchEvidence(projectId: string, documentId: string, batch: repo.Batch, out: PdfBatchOutput) {
   const locations = await repo.listLocations(projectId);
+  const wrongGallery = !!(await repo.getDocument(projectId, documentId)).error?.includes(ADDRESS_MISMATCH);
   const rows: Parameters<typeof repo.replaceBatchEvidence>[3] = [];
   for (const page of out.pages) {
     if (page.page < batch.startPage || page.page > batch.endPage) continue; // ignore out-of-range claims
@@ -146,7 +166,8 @@ export async function saveBatchEvidence(projectId: string, documentId: string, b
       const flags = [...ph.flags];
       let locationId: string | null = null;
       const label = [ph.floor, ph.unit, ph.room].filter(Boolean).join(" / ") || null;
-      if (ph.room && ph.locationConfidence !== "low") {
+      if (wrongGallery) flags.push("Gallery address does not match this project — not assigned to a room");
+      else if (ph.room && ph.locationConfidence !== "low") {
         const r = resolveLocation({ floor: ph.floor, unit: ph.unit, room: ph.room }, locations);
         if (r.kind === "existing") locationId = r.location.id;
         else if (r.kind === "new") {

@@ -89,12 +89,13 @@ export default function PhotosTab({ ws, projectId, reload, flash, openEvidence, 
     setErr("");
     setUpload(0);
     try {
-      const r = await uploadProjectPdf<{ document: { id: string; scannedPages: number; pageCount: number } }>(projectId, f, setUpload, {
+      const r = await uploadProjectPdf<{ document: { id: string; scannedPages: number; pageCount: number; addressMismatch?: string | null } }>(projectId, f, setUpload, {
         direct: !!blobReady,
       });
       setUpload(null);
       await reload();
-      if (r.document.scannedPages) flash(`${r.document.scannedPages} of ${r.document.pageCount} pages have no selectable text — they will be read visually.`);
+      if (r.document.addressMismatch) window.alert(r.document.addressMismatch);
+      else if (r.document.scannedPages) flash(`${r.document.scannedPages} of ${r.document.pageCount} pages have no selectable text — they will be read visually.`);
       if (aiReady) processDoc(r.document.id);
     } catch (e) {
       setUpload(null);

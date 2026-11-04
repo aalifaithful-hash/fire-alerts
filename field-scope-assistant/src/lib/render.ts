@@ -478,6 +478,8 @@ function renderDocInner(input: RenderInput, checklistFor?: VisitType): ScopeDoc 
       return renderAssessment(input);
     case "initial_mitigation":
       return renderMitigation(input, "Initial Mitigation Scope");
+    case "mold_remediation":
+      return renderMitigation(input, "Mold Remediation Scope");
     case "kickoff":
       return renderKickoff(input);
     case "daily_monitoring":
