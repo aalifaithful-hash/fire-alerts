@@ -49,14 +49,14 @@ export default function ScopeTab(p: Props) {
   const loadNotes = notesSave.load;
 
   // proposed room-scan lines still waiting for the PM's OK (so the scope never looks empty for no reason)
-  const [waiting, setWaiting] = useState<{ lines: number; rooms: number } | null>(null);
+  const [waiting, setWaiting] = useState<{ lines: number; rooms: number; presend: { ok: boolean; accepted: number; failures: string[] } | null } | null>(null);
   const load = useCallback(async () => {
     if (!visitId) return setData(null);
     const d = await api<VisitData>(base);
     setData(d);
     loadNotes(d.visit.fieldNotes);
-    api<{ rooms: { data: { lines: { status: string }[] } }[] }>(`${base}/scans`)
-      .then((sv) => setWaiting({ lines: sv.rooms.reduce((a, r) => a + r.data.lines.filter((l) => l.status === "suggested").length, 0), rooms: sv.rooms.length }))
+    api<{ rooms: { data: { lines: { status: string }[] } }[]; summary: { presend: { ok: boolean; accepted: number; failures: string[] } } }>(`${base}/scans`)
+      .then((sv) => setWaiting({ lines: sv.rooms.reduce((a, r) => a + r.data.lines.filter((l) => l.status === "suggested").length, 0), rooms: sv.rooms.length, presend: sv.rooms.length ? sv.summary.presend : null }))
       .catch(() => setWaiting(null));
   }, [base, visitId, loadNotes]);
 
@@ -384,8 +384,29 @@ export default function ScopeTab(p: Props) {
         </div>
       ) : (
         <>
-          <button className="btn primary big" style={{ marginBottom: 8 }} onClick={() => copy(data.slack, "Slack text")}>
-            Copy for Slack
+          {waiting?.presend && (
+            <div className={`card small ${waiting.presend.ok ? "ok" : "warn"}`} style={{ marginBottom: 8 }} role="status" aria-label="Pre-send check">
+              {waiting.presend.ok ? (
+                <strong>✓ Pre-send check passed — every accepted line has a quantity, a justification and a source.</strong>
+              ) : (
+                <>
+                  <strong>Not ready to send — files are marked DRAFT until this passes:</strong>
+                  <ul style={{ paddingLeft: 18, margin: "4px 0 0" }}>
+                    {waiting.presend.failures.slice(0, 8).map((f, i) => (
+                      <li key={i}>{f}</li>
+                    ))}
+                    {waiting.presend.failures.length > 8 && <li>…and {waiting.presend.failures.length - 8} more (Scan tab → Before sending)</li>}
+                  </ul>
+                </>
+              )}
+            </div>
+          )}
+          <button
+            className="btn primary big"
+            style={{ marginBottom: 8 }}
+            onClick={() => copy(waiting?.presend && !waiting.presend.ok ? `DRAFT — not ready to send (pre-send check failed)\n\n${data.slack}` : data.slack, "Slack text")}
+          >
+            {waiting?.presend && !waiting.presend.ok ? "Copy DRAFT for Slack" : "Copy for Slack"}
           </button>
           <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 8, marginBottom: 10 }}>
             <button className="btn" onClick={() => copy(data.text, "Plain text")}>

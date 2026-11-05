@@ -149,7 +149,9 @@ export function proposeVisit(f: ReportFindings, rooms: VisitRoom[], yearBuilt: n
       if (curPct != null && curPct !== pct && prev["floor.pct"] !== fmtPct(curPct))
         mismatches.push(`${multi ? `${where}: ` : ""}Different extent: you entered ${curPct}% of the floor; the report says ${pct >= 100 ? "the whole floor" : `${pct}%`}.`);
     }
-    if (r.growth && !s?.materials.flooring.affected && (r.coverage || r.areaSF != null || r.vague || !multi)) d("floor.affected", "Flooring with growth", s ? "No" : null, "Yes", p.report ?? f.floorCoverage ?? f.affectedAreaSF);
+    const itemized = !!r.surfaces?.length;
+    const hasFloor = itemized ? r.surfaces!.includes("floor") : true;
+    if (r.growth && hasFloor && !s?.materials.flooring.affected && (itemized || r.coverage || r.areaSF != null || r.vague || !multi)) d("floor.affected", "Flooring with growth", s ? "No" : null, "Yes", p.report ?? f.floorCoverage ?? f.affectedAreaSF);
     if (r.areaSF != null) {
       const sL = s?.measurements.lengthFt;
       const sW = s?.measurements.widthFt;
@@ -166,17 +168,46 @@ export function proposeVisit(f: ReportFindings, rooms: VisitRoom[], yearBuilt: n
       }
     }
     // flooring material and continuous run
-    if ((r.growth || p.runOnly) && f.flooringType && !s?.materials.flooring.type) d("flooring.type", "Flooring", null, f.flooringType.value, f.flooringType);
+    if ((r.growth || p.runOnly) && hasFloor && f.flooringType && !s?.materials.flooring.type) d("flooring.type", "Flooring", null, f.flooringType.value, f.flooringType);
     if (runGroup.includes(p) && runGroup.length > 1) d("floor.run", "Continuous flooring run", s?.materials.flooring.continuousRun ?? null, existingRun, f.flooringContinuous);
     if (p.primary && f.flooringContinuous && !f.flooringContinuous.value.continues && !s?.materials.flooring.breakNote) d("floor.break", "Flooring run", null, "Stops at a break (no other rooms)", f.flooringContinuous);
     // material decisions — report-wide statements apply to the rooms with growth; room statements to their room
     const mine = (x: Finding<unknown> | null) => !!x && (x.room ? x.room.toLowerCase() === p.name.toLowerCase() : !p.runOnly && (p.primary || !multi || x === f.subfloor));
-    if (f.subfloor && mine(f.subfloor)) {
+    // flooring: the assessor's remove-or-sand option for named rooms
+    const ft = f.floorTreatment;
+    if (ft && hasFloor && ft.value.rooms.some((n) => n.toLowerCase() === p.name.toLowerCase()) && s?.materials.flooring.choice !== "remove_or_sand" && !s?.materials.flooring.action)
+      d("floor.choice", "Wood flooring treatment", null, "Remove OR sand the discoloration — the report allows either (you choose)", ft);
+    // drywall removals the report states for this room
+    const wr = (f.wallRemovals ?? []).find((w) => w.value.rooms.some((n) => n.toLowerCase() === p.name.toLowerCase()));
+    if (wr) {
+      const label = wr.value.statedSF != null ? wr.value.wallLabel : (r.wallLabel ?? wr.value.wallLabel);
+      const prop = wr.value.statedSF != null ? `${label}: ${wr.value.statedSF} SF of drywall as stated${wr.value.approximate ? " (approximately)" : ""}${wr.value.entireWall ? ", entire wall" : ""}` : `${label}: remove drywall ${wr.value.heightIn}" (${(wr.value.heightIn ?? 0) / 12} ft) from the floor`;
+      const sw = s?.materials.walls;
+      const cur = sw && sw.affectedWalls.length ? `${sw.affectedWalls.join(", ")}${typeof sw.floodCut === "number" ? ` at ${sw.floodCut}"` : ""}${sw.statedRemovalSF ? `: ${sw.statedRemovalSF} SF` : ""}` : null;
+      const same = !!sw && sw.affectedWalls.includes(label) && (wr.value.statedSF != null ? sw.statedRemovalSF === wr.value.statedSF : sw.floodCut === wr.value.heightIn);
+      if (!same) d("walls.removal", "Drywall removal", cur, prop, wr);
+    }
+    const bbr = (f.baseboardRemovals ?? []).find((b) => b.value.room.toLowerCase() === p.name.toLowerCase());
+    if (bbr && !(s?.materials.baseboard.affected && s.materials.baseboard.action === "remove")) d("baseboard.remove", "Baseboard / base moldings", s?.materials.baseboard.affected ? s.materials.baseboard.action : null, "Remove all base moldings", bbr);
+    for (const sp of (f.specialItems ?? []).filter((x) => x.value.room.toLowerCase() === p.name.toLowerCase()))
+      if (!s?.materials.moldSpecial.includes(sp.value.kind)) d(`special.${sp.value.kind}`, sp.value.kind === "vent" ? "Vent cleaning" : "Shower caulking", null, sp.value.kind === "vent" ? `Clean the vent${sp.value.hvacIfInaccessible ? " (HVAC company if not accessible)" : ""}` : "Scrape, sanitize, re-seal with silicone", sp);
+    // containment per the report: this room's own area, or none listed
+    const ca = f.containment?.value.areas;
+    if (ca?.length && !p.runOnly) {
+      const mineArea = ca.find((a) => a.room.toLowerCase() === p.name.toLowerCase());
+      const want = mineArea ? `${mineArea.extent === "entire" ? "Entire room" : mineArea.extent === "localized" ? "Localized area" : "Containment"}${f.airScrubber ? ` + ${f.airScrubber.value.perContainment} HEPA air scrubber${f.airScrubber.value.hours ? `, ${f.airScrubber.value.hours} h` : ""}${f.airScrubber.value.ach ? ` at ${f.airScrubber.value.ach} ACH` : ""}` : ""}` : "None listed for this room";
+      const cur = s?.containmentArea ? (s.containmentArea.none ? "None listed for this room" : `${s.containmentArea.extent === "entire" ? "Entire room" : s.containmentArea.extent === "localized" ? "Localized area" : "Containment"}${s.containmentArea.scrubber ? ` + ${s.containmentArea.scrubber.perContainment} HEPA air scrubber${s.containmentArea.scrubber.hours ? `, ${s.containmentArea.scrubber.hours} h` : ""}${s.containmentArea.scrubber.ach ? ` at ${s.containmentArea.scrubber.ach} ACH` : ""}` : ""}`) : null;
+      if (cur !== want) d("containment.area", "Containment", cur, want, mineArea ? f.containment! : (f.containment as Finding<unknown>));
+    }
+    if (f.packout && ca?.some((a) => a.room.toLowerCase() === p.name.toLowerCase()) && !(s?.contents.present && s.contents.handling === "packout"))
+      d("contents.packout", "Contents", s?.contents.present ? s.contents.handling : null, "Surface clean & pack out; porous items that can't be laundered are discarded", f.packout);
+    if (f.sourceMustBeAddressed && !f.sourceFixed && !p.runOnly && !s?.source.hold) d("source.hold", "Moisture source", null, "HOLD — the report says it must be addressed; not confirmed fixed", f.sourceMustBeAddressed);
+    if (f.subfloor && mine(f.subfloor) && hasFloor) {
       const cur = s?.materials.subfloor ?? null;
       d("subfloor", "Subfloor", cur ? (cur === "remove" ? "Remove" : "Clean and treat (stays)") : null, f.subfloor.value === "remove" ? "Remove" : "Clean and treat (stays)", f.subfloor);
       if (cur && cur !== f.subfloor.value && !prev.subfloor) mismatches.push(`${multi ? `${where}: ` : ""}Subfloor: you have "${cur === "remove" ? "remove" : "clean and keep"}", the report says "${f.subfloor.value === "remove" ? "remove" : "clean and keep"}".`);
     }
-    if (f.wallsGrowth?.value.growth && mine(f.wallsGrowth)) {
+    if (f.wallsGrowth?.value.growth && mine(f.wallsGrowth) && !(f.wallRemovals ?? []).length) {
       const g = f.wallsGrowth.value;
       const sw = s?.materials.walls;
       const already = !!sw && g.walls.every((w) => sw.affectedWalls.includes(w)) && (g.heightIn == null || sw.wetHeightIn === g.heightIn);
@@ -261,7 +292,8 @@ export function applyVisit(f: ReportFindings, plans: RoomPlan[], changes: Report
       if (Number.isFinite(n)) scan.materials.flooring.affectedPct = n;
       set("floor.pct");
     }
-    if (has(p, "floor.affected") || (!p.target && r.growth)) scan.materials.flooring.affected = true;
+    const floorHere = !r.surfaces?.length || r.surfaces.includes("floor");
+    if (has(p, "floor.affected") || (!p.target && r.growth && floorHere)) scan.materials.flooring.affected = true;
     if (has(p, "flooring.type") && f.flooringType) scan.materials.flooring.type = f.flooringType.value;
     if (has(p, "floor.run")) {
       scan.materials.flooring.continuousRun = chg("floor.run")!.proposed;
@@ -287,6 +319,42 @@ export function applyVisit(f: ReportFindings, plans: RoomPlan[], changes: Report
       scan.materials.baseboard = { affected: true, walls: [...walls], action: "remove" };
     }
     if (has(p, "framing") && f.framingGrowth) scan.materials.framing = { ...f.framingGrowth.value };
+    if (has(p, "floor.choice")) scan.materials.flooring.choice = "remove_or_sand";
+    const wr = (f.wallRemovals ?? []).find((w) => w.value.rooms.some((n) => n.toLowerCase() === p.name.toLowerCase()));
+    if (has(p, "walls.removal") && wr) {
+      const label = wr.value.statedSF != null ? wr.value.wallLabel : (r.wallLabel ?? wr.value.wallLabel);
+      scan.materials.walls.affectedWalls = [label];
+      scan.materials.walls.material = scan.materials.walls.material ?? "drywall";
+      if (wr.value.statedSF != null) {
+        scan.materials.walls.statedRemovalSF = wr.value.statedSF;
+        scan.materials.walls.statedApproximate = wr.value.approximate;
+      } else if (wr.value.heightIn != null) {
+        scan.materials.walls.floodCut = wr.value.heightIn;
+        scan.materials.walls.cutSource = `report: remove drywall ${wr.value.heightIn / 12} ft from the floor along the affected wall (p.${wr.page})`;
+      }
+      scan.materials.encapsulate = !!f.encapsulant;
+      set("walls.removal");
+    }
+    if (has(p, "baseboard.remove")) scan.materials.baseboard = { affected: true, walls: ["N", "E", "S", "W"], action: "remove" };
+    for (const k of ["shower_caulking", "vent"] as const)
+      if (has(p, `special.${k}`) && !scan.materials.moldSpecial.includes(k)) {
+        scan.materials.moldSpecial = [...scan.materials.moldSpecial, k];
+        if (k === "vent") scan.materials.ventHvacIfInaccessible = !!(f.specialItems ?? []).find((x) => x.value.kind === "vent")?.value.hvacIfInaccessible;
+      }
+    if (has(p, "containment.area") && f.containment?.value.areas) {
+      const a = f.containment.value.areas.find((x) => x.room.toLowerCase() === p.name.toLowerCase());
+      scan.containmentArea = a ? { extent: a.extent, none: false, scrubber: f.airScrubber ? { perContainment: f.airScrubber.value.perContainment, hours: f.airScrubber.value.hours, ach: f.airScrubber.value.ach } : null } : { extent: null, none: true, scrubber: null };
+      set("containment.area");
+    }
+    if (has(p, "contents.packout")) scan.contents = { present: true, affected: true, items: "items in the remediation area (porous items that can't be laundered are discarded)", handling: "packout" };
+    if (has(p, "source.hold") && f.sourceMustBeAddressed) scan.source.hold = f.sourceMustBeAddressed.quote.slice(0, 300);
+    // report notes for this room (not scope lines)
+    const notes: string[] = [];
+    if (r.airElevated) notes.push(`Report: elevated mold spore counts in the air sample here${p.report ? ` (p.${p.report.page})` : ""}.`);
+    for (const c of f.otherConcerns ?? []) if (findMention(c.quote, p.name)) notes.push(`Report (p.${c.page}): “${c.quote}”`);
+    if (p.primary && f.hazardNote) notes.push(`Report (p.${f.hazardNote.page}): “${f.hazardNote.quote}”`);
+    if (p.primary) for (const c of f.conflicts ?? []) notes.push(`⚑ The report disagrees with itself: ${c.text}.`);
+    scan.reportNotes = notes;
     if (has(p, "source.status") && f.sourceFixed) {
       scan.source.status = f.sourceFixed.value ? "repaired" : "active";
       set("source.status");
@@ -299,7 +367,7 @@ export function applyVisit(f: ReportFindings, plans: RoomPlan[], changes: Report
     scan.reportPrimary = p.primary;
     scan.reportValues = rv;
     // one containment for connected rooms with growth: the primary room carries it
-    const shared = growthRooms.length > 1 && (!!f.flooringContinuous?.value.continues || f.containment?.value.level === "full");
+    const shared = growthRooms.length > 1 && !f.containment?.value.separate && !f.containment?.value.areas?.length && (!!f.flooringContinuous?.value.continues || f.containment?.value.level === "full");
     scan.containmentGroup = shared && !p.runOnly ? { primary: p.primary, rooms: growthRooms.map((g) => g.name).filter(Boolean) } : null;
     const roomName = p.target ? (has(p, "room.name") ? p.name : null) : p.name || "Affected area (room TBD)";
     out.push({ plan: p, create: !p.target, roomName, scan });
@@ -308,17 +376,26 @@ export function applyVisit(f: ReportFindings, plans: RoomPlan[], changes: Report
   return { rooms: out, yearBuilt };
 }
 
+const findMention = (text: string, room: string) => {
+  const t = text.toLowerCase();
+  const r = room.toLowerCase();
+  return t.includes(r) || (r.startsWith("washer") && /\bwasher\b/.test(t));
+};
+
 function emptyLike(): RoomScanData {
   return {
-    source: { where: "unknown", fixture: null, wall: null, positionFt: null, surface: null, status: "unknown", hoursSinceLoss: null, waterSource: null },
+    source: { where: "unknown", fixture: null, wall: null, positionFt: null, surface: null, status: "unknown", hoursSinceLoss: null, waterSource: null, hold: null },
     loss: { type: "mold", category: null, waterClass: null, smokeType: null, assessmentReport: null },
     materials: {
-      flooring: { type: null, affected: false, affectedPct: null, action: null, continuousRun: null, breakNote: null },
+      flooring: { type: null, affected: false, affectedPct: null, action: null, choice: null, continuousRun: null, breakNote: null },
       baseboard: { affected: false, walls: [], action: null },
-      walls: { material: null, affectedWalls: [], wetHeightIn: null, floodCut: "auto" },
+      walls: { material: null, affectedWalls: [], wetHeightIn: null, floodCut: "auto", statedRemovalSF: null, statedApproximate: false, cutSource: null },
       ceiling: { affected: false, affectedPct: null, action: null },
       insulation: false,
       subfloor: null,
+    encapsulate: false,
+    moldSpecial: [],
+    ventHvacIfInaccessible: false,
       framing: { growth: false, where: null, action: null },
       cabinets: { affected: false, lf: null, detach: false },
       fixtures: [],
@@ -336,6 +413,9 @@ function emptyLike(): RoomScanData {
     containmentGroup: null,
     lineNotes: {},
     reportChanges: [],
+    containmentArea: null,
+    reportNotes: [],
+    quantityOverrides: {},
   };
 }
 
@@ -355,6 +435,9 @@ export function applyChanges(f: ReportFindings, t: RoomTarget, keys: string[], d
 export function stillMissing(f: ReportFindings, ctx: { yearBuiltKnown: boolean; runKnown: boolean }, scope?: { room: string | null; primary: boolean }): string[] {
   const out: string[] = [];
   const docWide = !scope || scope.primary;
+  if (docWide && f.sourceMustBeAddressed && !f.sourceFixed)
+    out.push(`HOLD: source of water intrusion not confirmed fixed — the report says “${f.sourceMustBeAddressed.quote}” (p.${f.sourceMustBeAddressed.page}); remediation can't be finalized until it is confirmed`);
+  if (docWide) for (const c of f.conflicts ?? []) out.push(`Report disagrees with itself — ${c.text} (${c.quotes.map((q) => `p.${q.page}: “${q.quote}”`).join(" vs ")})`);
   if (docWide && f.sourceFixed?.value === false) out.push(`HOLD: the moisture source is not fixed (report: “${f.sourceFixed.quote}”) — remediation can't be finalized until it is repaired and the materials are dry`);
   const roomsHere = f.rooms.filter((r) => !scope || (r.value.name || null) === (scope.room || null) || (!scope.room && scope.primary));
   if (!f.rooms.length) {
@@ -363,8 +446,19 @@ export function stillMissing(f: ReportFindings, ctx: { yearBuiltKnown: boolean; 
     for (const r of roomsHere) {
       if (!r.value.growth) continue;
       const n = r.value.name ? `${r.value.name}: ` : "";
-      if (r.value.lengthFt == null) out.push(`${n}room measurements — not in the report`);
-      else if (r.value.heightFt == null) out.push(`${n}ceiling height — not in the report`);
+      const sf = r.value.surfaces ?? [];
+      const contained = !!f.containment?.value.areas?.some((a) => a.room.toLowerCase() === r.value.name.toLowerCase());
+      const needsSize = !sf.length || sf.some((x) => x === "wall" || x === "floor" || x === "ceiling") || contained;
+      const hasFloor = !sf.length || sf.includes("floor");
+      if (needsSize && r.value.lengthFt == null) out.push(`${n}room measurements — not in the report`);
+      else if (needsSize && r.value.heightFt == null) out.push(`${n}ceiling height — not in the report`);
+      const wr = (f.wallRemovals ?? []).find((w) => w.value.rooms.some((x) => x.toLowerCase() === r.value.name.toLowerCase()));
+      if (wr?.value.heightIn != null) out.push(`${n}length of the ${r.value.wallLabel ?? wr.value.wallLabel} — sets the drywall removal SF at ${wr.value.heightIn}" high (not in the report)`);
+      if (wr?.value.statedSF != null && wr.value.approximate) out.push(`${n}drywall removal is “approximately ${wr.value.statedSF} square feet” in the report — verify on site`);
+      const area = f.containment?.value.areas?.find((a) => a.room.toLowerCase() === r.value.name.toLowerCase());
+      if (area?.extent === "localized") out.push(`${n}size of the localized containment (poly SF) — not in the report`);
+      if (sf.includes("caulking")) out.push(`${n}shower caulk length (LF) — not in the report`);
+      if (!hasFloor) continue;
       if (r.value.areaSF == null && !r.value.coverage) out.push(r.value.vague ? `${n}affected area — the report only says “${r.value.vague}” (no SF or boundary)` : `${n}affected area / whole floor or part — not in the report`);
       else if (r.value.coverage && !r.value.coverage.whole && r.value.coverage.pct == null && r.value.areaSF == null)
         out.push(`${n}growth on part of the floor with no SF or boundary — measure the affected area (clarify with the assessor)`);
@@ -374,15 +468,19 @@ export function stillMissing(f: ReportFindings, ctx: { yearBuiltKnown: boolean; 
     if (cr.length) out.push(`Remediation plan: ${cr.join(" and ")}`);
     const gr = [!f.subfloor && "whether the subfloor is cleaned or removed", !f.wallsGrowth && "growth on walls", !f.baseboardBacksGrowth && "growth on baseboard backs", !f.framingGrowth && "growth on framing"].filter(Boolean);
     if (gr.length) out.push(`Not stated in the report: ${gr.join(", ")}`);
-    if (f.wallsGrowth?.value.growth && !f.wallsGrowth.value.walls.length) out.push("Which walls have growth — the report doesn't name them");
-    if (f.wallsGrowth?.value.growth && f.wallsGrowth.value.heightIn == null) out.push("How high the growth goes on the walls — sets the drywall removal");
+    const wallsCovered = !!(f.wallRemovals ?? []).length;
+    if (f.wallsGrowth?.value.growth && !f.wallsGrowth.value.walls.length && !wallsCovered) out.push("Which walls have growth — the report doesn't name them");
+    if (f.wallsGrowth?.value.growth && f.wallsGrowth.value.heightIn == null && !wallsCovered) out.push("How high the growth goes on the walls — sets the drywall removal");
+    if (f.floorTreatment) out.push(`${f.floorTreatment.value.rooms.join(", ")}: remove the affected wood flooring or sand the discoloration — the report allows either (p.${f.floorTreatment.page}); pick one per room`);
     if (f.framingGrowth?.value.growth && !f.framingGrowth.value.action) out.push(`Whether the ${f.framingGrowth.value.where} with growth are cleaned or removed`);
     const cl = [!f.clearanceCriteria && "clearance criteria", !f.clearanceBy && "who performs the post-remediation verification"].filter(Boolean);
     if (cl.length) {
       const said = f.unanswered.find((u) => u.key === "clearanceCriteria" && u.quote)?.quote;
       out.push(`${cl.join(" and ").replace(/^./, (c) => c.toUpperCase())}${said ? ` (report: “${said}”)` : " — not in the report"}`);
     }
-    if (!f.sourceFixed) out.push("Whether the moisture source is fixed — not in the report; remediation can't be finalized until it is confirmed");
+    if (!f.moistureSource) out.push("What the moisture source is — not identified in the report");
+    if (!f.sourceFixed && !f.sourceMustBeAddressed) out.push("Whether the moisture source is fixed — not in the report; remediation can't be finalized until it is confirmed");
+    if (f.labTablesMissing) out.push(`Mold species / lab results — the report refers to lab results (p.${f.labTablesMissing.page}) but no lab tables are in the file's text; not filled in`);
     if (!f.yearBuilt && !ctx.yearBuiltKnown) out.push("Year built — not in the report (lead/asbestos check before demolition)");
     if (!f.flooringContinuous && !ctx.runKnown) out.push("Whether the wood flooring runs into other rooms — not in the report");
   }

@@ -375,6 +375,24 @@ Anything the report doesn't state stays blank and is listed as missing.
 
 **What rules cannot do (needs AI, off until the owner approves a key):** read scanned or photographed reports, handwriting, report text inside images, or free-form wording the patterns don't cover. Those are stored and marked "cannot read", never guessed.
 
+## Real Test 1 report (Nov 5)
+
+The rules analyzer was tested against the real Test 1 assessment report. Its text, test file and PDF are kept out of this public repository.
+
+What the analyzer now handles in reports written as a protocol:
+- rooms from bullet lists;
+- repeated page headers stripped;
+- a label on its own line joined with its value;
+- sentences that run across a page break rejoined;
+- lettered containment areas read as separate containments;
+- the scrubber spec (count per containment, hours, ACH);
+- stated drywall SF, used as stated, and the remove-or-sand flooring option;
+- numbered clearance criteria;
+- "source must be addressed" treated as not fixed, which raises a HOLD;
+- disagreements inside the report flagged, never resolved silently.
+
+**Pre-send accuracy check:** a scope with an accepted line that lacks a quantity, a justification or a source, or with a room on HOLD, is exported marked "DRAFT — NOT READY TO SEND".
+
 ## Suggested order
 
 a1–a3 (paste-in FNOL), then the data-model corrections, then e1–e2 with d1 (the room workflow with manual measurements; this is where most scope value comes from), then c1, c4, c7, c9 (rules, estimator lines, exclusions), then d4 (sketch), then b1–b5, then c2, c2b, c3, c8, c10, c11, then a4–a7 (once Slack is connected), then f2, then h1–h2. AI pieces (a6, c6, e3, f3) and d2–d3 wait on decisions.

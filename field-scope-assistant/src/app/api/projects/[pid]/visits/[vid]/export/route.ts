@@ -2,7 +2,7 @@ import { route } from "@/lib/http";
 import * as repo from "@/lib/repo";
 import { checklistDoc, UserError } from "@/lib/service";
 import { docLines, textLines, toDocx, toPdf, type ExportAppendix } from "@/lib/export";
-import { exportAppendix } from "@/lib/scans";
+import { exportAppendix, getVisitScans } from "@/lib/scans";
 import { docToText } from "@/lib/render";
 import { VISIT_TYPE_LABELS } from "@/lib/schemas";
 
@@ -15,7 +15,12 @@ export const GET = route<P>(async (req, { pid, vid }) => {
   const cl = wantChecklist ? await checklistDoc(pid, visit) : null;
   if (wantChecklist && !cl) throw new UserError("No checklist information for this visit yet.");
   if (!cl && !visit.doc && !visit.manualText) throw new UserError("Generate a draft first.");
-  const lines = cl ? docLines(cl.doc) : visit.manualText ? textLines(visit.manualText) : docLines(visit.doc!);
+  let lines = cl ? docLines(cl.doc) : visit.manualText ? textLines(visit.manualText) : docLines(visit.doc!);
+  // Pre-send accuracy check: a scope that fails it is exported marked DRAFT with the reasons on top.
+  if (!cl) {
+    const pre = (await getVisitScans(pid, vid)).summary.presend;
+    if (!pre.ok) lines = [...textLines(`DRAFT — NOT READY TO SEND. Pre-send check failed:\n${pre.failures.map((f) => `• ${f}`).join("\n")}\n`), ...lines];
+  }
   // Scope first, then estimator line items, then the sketch (room scans only).
   let appendix: ExportAppendix | null = null;
   if (!cl) {

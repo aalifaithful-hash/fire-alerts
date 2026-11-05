@@ -40,7 +40,7 @@ export interface RoomAnalysis {
   pending: string[];
 }
 
-type Draft = Omit<ScopeLine, "status" | "rate" | "total" | "evidence" | "flags"> & { flags?: string[]; evidence?: string[] };
+type Draft = Omit<ScopeLine, "status" | "rate" | "total" | "evidence" | "flags" | "source"> & { flags?: string[]; evidence?: string[] };
 
 const isDemo = (l: Draft) => /^(Remove|Flood cut|Tear out)/i.test(l.activity);
 
@@ -93,7 +93,7 @@ export function analyzeRoom(scanIn: RoomScanData, ctx: RoomContext): RoomAnalysi
   // Mold defaults the PM didn't set (shown as "assumed" so they can be changed in the scan):
   // porous/semi-porous flooring with growth is removed (and later replaced); baseboard comes off with it.
   const m = structuredClone(scan.materials);
-  if (mold && m.flooring.affected && m.flooring.action == null && growthRemove(m.flooring.type)) {
+  if (mold && m.flooring.affected && m.flooring.action == null && m.flooring.choice !== "remove_or_sand" && growthRemove(m.flooring.type)) {
     m.flooring.action = "replace";
     assumed.push(`${m.flooring.type} flooring with growth is removed, not cleaned (S520) and replaced later — change "Flooring action" if the assessor says otherwise.`);
   }
@@ -117,7 +117,11 @@ export function analyzeRoom(scanIn: RoomScanData, ctx: RoomContext): RoomAnalysi
   const room = ctx.roomLabel;
 
   // ---------------- measurements & basics ----------------
-  if (!t.floorSF && !t.heightFt) questions.push(`${room}: measure length, width and ceiling height — quantities stay blank until measured.`);
+  // Rooms where nothing depends on the size (a vent clean, a caulk re-seal) don't ask for measurements.
+  const sizeMatters = !(scan.loss.type === "mold" && scan.containmentArea?.none && !scan.materials.flooring.affected && !scan.materials.walls.affectedWalls.length && !scan.materials.ceiling.affected);
+  if (!sizeMatters) {
+    /* nothing to measure */
+  } else if (!t.floorSF && !t.heightFt) questions.push(`${room}: measure length, width and ceiling height — quantities stay blank until measured.`);
   else if (!t.floorSF) questions.push(`${room}: enter length and width — quantities stay blank until measured.`);
   else if (!t.heightFt) questions.push(`${room}: enter ceiling height for wall and paint quantities.`);
   if (/room TBD/i.test(room)) questions.push(`${room}: which room is this? (rename it in Rooms — the scope prints the room name)`);
@@ -233,17 +237,27 @@ export function analyzeRoom(scanIn: RoomScanData, ctx: RoomContext): RoomAnalysi
     if (m.walls.material === "plaster") questions.push(`${room}: plaster walls with growth — clean in place or remove? (the assessor's plan decides)`);
     else {
       const explicit = typeof m.walls.floodCut === "number";
-      if (wet == null && !explicit) {
+      const stated = m.walls.statedRemovalSF;
+      if (stated != null) {
+        const calc = `${stated} SF as stated by the report${m.walls.statedApproximate ? " (\"approximately\" — verify on site)" : ""}; not derived from measurements`;
+        add({ id: "mold.walls.remove", ruleId: "mold.removeWhenGrowth", kind: "mitigation", scopeCategory: "removal", activity: "Remove & bag", item: `drywall with growth — ${m.walls.affectedWalls.join(", ")}`, quantity: stated, unit: "SF", calc, justification: "Drywall with growth is removed per the assessor's plan.", flags: m.walls.statedApproximate ? ["Approximate quantity in the report — verify on site."] : [] });
+        add({ id: "mold.walls.cavity", ruleId: "mold.cleaningSteps", kind: "mitigation", scopeCategory: "cleaning", activity: "Clean", item: `exposed framing behind the removed drywall — wire-brush/sand, HEPA vacuum, damp-wipe`, quantity: stated, unit: "SF", calc: `same area as the drywall removed: ${stated} SF (report)`, justification: "Clean the framing exposed by the drywall removal before clearance." });
+        if (m.encapsulate) add({ id: "mold.encapsulate", ruleId: "mold.encapsulant", kind: "mitigation", scopeCategory: "antimicrobial", activity: "Apply", item: "EPA-registered encapsulating paint to the exposed framing", quantity: stated, unit: "SF", calc: `same area as the drywall removed: ${stated} SF (report)`, justification: "Encapsulate the cleaned framing behind the removed drywall." });
+        add({ id: "drywall.replace", ruleId: "whatGoesWithIt.drywallFloodCut", kind: "reconstruction", scopeCategory: "replacement", activity: "Replace", item: "drywall — hang, tape, finish", quantity: stated, unit: "SF", calc: `same area as removed: ${stated} SF (report)`, justification: "Replaces the drywall removed (same SF). Rebuild only after clearance." });
+      } else if (wet == null && !explicit) {
         add({ id: "mold.walls.remove", ruleId: "mold.removeWhenGrowth", kind: "mitigation", scopeCategory: "removal", activity: "Remove & bag", item: `drywall with growth (${m.walls.affectedWalls.join(", ")}) — height not stated`, quantity: null, unit: "SF", calc: "growth height not stated — no quantity", justification: "Drywall with growth is removed (S520)." });
         questions.push(`${room}: how high does the growth go on walls ${m.walls.affectedWalls.join(", ")}? (sets the drywall removal)`);
       } else {
-        const ch = explicit ? { cutIn: m.walls.floodCut as number, calc: `${m.walls.floodCut}" set by PM` } : cutHeight(wet!, "3", R);
+        const ch = explicit ? { cutIn: m.walls.floodCut as number, calc: m.walls.cutSource ? `${m.walls.floodCut}" — ${m.walls.cutSource}` : `${m.walls.floodCut}" set by PM` } : cutHeight(wet!, "3", R);
         const parts = affectedWalls.map((w) => floodCutSF(w, ch.cutIn));
+        const missingWalls = m.walls.affectedWalls.filter((w) => !affectedWalls.some((x) => x.label === w));
         const sf = parts.length === m.walls.affectedWalls.length ? r1(parts.reduce((a, p) => a + p.sf, 0)) : null;
-        const calc = `${explicit ? ch.calc : `growth to ${wet}" + 24" beyond = ${wet! + 24}" → ${ch.cutIn}" (sheet stop)`}; ${parts.length ? parts.map((p) => p.calc).join("; ") : "walls not measured"}`;
+        const calc = `${explicit ? ch.calc : `growth to ${wet}" + 24" beyond = ${wet! + 24}" → ${ch.cutIn}" (sheet stop)`}; ${[...parts.map((p) => p.calc), ...missingWalls.map((w) => `${w}: length not measured`)].join("; ") || "walls not measured"}`;
         add({ id: "mold.walls.remove", ruleId: "mold.removeWhenGrowth", kind: "mitigation", scopeCategory: "removal", activity: "Remove & bag", item: `drywall with growth to ${ch.cutIn}" (${m.walls.affectedWalls.join(", ")})`, quantity: sf, unit: "SF", calc, justification: "Drywall with growth is removed, 2 ft beyond visible growth (S520 practice)." });
         if (m.insulation) add({ id: "mold.insulation.remove", ruleId: "mold.removeWhenGrowth", kind: "mitigation", scopeCategory: "removal", activity: "Remove & bag", item: `wall insulation to ${ch.cutIn}"`, quantity: sf, unit: "SF", calc, justification: "Insulation in the opened cavity is removed with the drywall." });
         add({ id: "mold.walls.cavity", ruleId: "mold.cleaningSteps", kind: "mitigation", scopeCategory: "cleaning", activity: "Clean", item: `opened wall cavity (studs, plates) to ${ch.cutIn}" — HEPA vacuum → wire-brush → damp-wipe`, quantity: sf, unit: "SF", calc, justification: "Clean the framing exposed by the drywall removal before clearance." });
+        if (m.encapsulate) add({ id: "mold.encapsulate", ruleId: "mold.encapsulant", kind: "mitigation", scopeCategory: "antimicrobial", activity: "Apply", item: `EPA-registered encapsulating paint to the exposed framing to ${ch.cutIn}"`, quantity: sf, unit: "SF", calc, justification: "Encapsulate the cleaned framing behind the removed drywall." });
+        if (missingWalls.length) questions.push(`${room}: measure the ${missingWalls.join(", ")} (length) — sets the drywall removal SF at ${ch.cutIn}" high.`);
         add({ id: "drywall.replace", ruleId: "whatGoesWithIt.drywallFloodCut", kind: "reconstruction", scopeCategory: "replacement", activity: "Replace", item: `drywall ${ch.cutIn}" — hang, tape, finish`, quantity: sf, unit: "SF", calc, justification: "Replaces the drywall removed (same SF)." });
         if (m.insulation) add({ id: "insulation.replace", ruleId: "whatGoesWithIt.drywallFloodCut", kind: "reconstruction", scopeCategory: "replacement", activity: "Replace", item: "wall insulation", quantity: sf, unit: "SF", calc, justification: "Goes with insulation removal." });
         m.walls.affectedWalls.forEach((w) => paintWall(w, `drywall with growth removed to ${ch.cutIn}"`));
@@ -282,7 +296,7 @@ export function analyzeRoom(scanIn: RoomScanData, ctx: RoomContext): RoomAnalysi
     // every painted wall must be measured: a partial sum would understate the full-wall quantity
     const sf = ws.length === labels.length && parts.every((p) => p.sf != null) ? r1(parts.reduce((a, p) => a + (p.sf ?? 0), 0)) : null;
     const missing = labels.filter((l) => !ws.some((w) => w.label === l));
-    const calc = [...parts.map((p) => p.calc), ...missing.map((l) => `${l} wall: not measured`)].join("; ") || "walls not measured";
+    const calc = [...parts.map((p) => p.calc), ...missing.map((l) => `${/wall$/i.test(l) ? l : `${l} wall`}: not measured`)].join("; ") || "walls not measured";
     add({ id: "walls.paint", ruleId: "whatGoesWithIt.paintFullWall", kind: "reconstruction", scopeCategory: "painting", activity: "Seal/prime & paint", item: `full continuous wall to natural break (${labels.join(", ")})`, quantity: sf, unit: "SF", calc, justification: `${labels.map((l) => `${l}: ${paintWalls.get(l)!.join(" + ")}`).join("; ")} — the full continuous wall (corner to corner, floor to ceiling, openings deducted) is sealed/primed and painted to the natural break so the finish matches. Quantity is wall SF, not baseboard LF or floor SF.` });
   }
 
@@ -325,35 +339,68 @@ export function analyzeRoom(scanIn: RoomScanData, ctx: RoomContext): RoomAnalysi
 
   // ---------------- mold remediation (S520) ----------------
   const pending: string[] = [];
-  const growthHere = m.flooring.affected || m.walls.affectedWalls.length > 0 || m.ceiling.affected || m.framing.growth || m.baseboard.affected || m.cabinets.affected;
+  const growthHere = m.flooring.affected || m.walls.affectedWalls.length > 0 || m.ceiling.affected || m.framing.growth || m.baseboard.affected || m.cabinets.affected || m.moldSpecial.length > 0;
   const runOnlyRoom = mold && !!scan.reportDocumentId && !growthHere;
   if (runOnlyRoom) notes.push("No growth reported in this room — it is in the continuous flooring run, so only the flooring replacement applies here.");
   const group = mold ? scan.containmentGroup : null;
   const sharedOther = !!group && !group.primary;
   if (mold && !runOnlyRoom) {
     const report = scan.loss.assessmentReport;
-    const hold = scan.source.status === "active";
+    const hold = scan.source.status === "active" || (!!scan.source.hold && scan.source.status !== "repaired" && scan.source.status !== "stopped");
     const pendingFlag = [
       ...(report === "pending" ? ["Confirm against the mold assessment report (pending)."] : report == null || report === "none" ? ["No mold assessment on file — confirm the protocol."] : []),
       ...(hold ? ["HOLD — the moisture source is not fixed: don't start until it is repaired and the materials are dry."] : scan.source.status === "unknown" ? ["Confirm the moisture source is fixed before starting."] : []),
     ];
     const moldAdd = (d: Draft) => add({ ...d, flags: [...(d.flags ?? []), ...pendingFlag] });
     if (hold) {
-      notes.push("⚑ HOLD: the moisture source is not fixed. Remediation can't be finalized until it is repaired and the materials are dry — this scope is not final.");
-      pending.push("HOLD: the moisture source is not fixed — remediation can't be finalized until it is repaired and the materials are dry");
+      notes.push(
+        scan.source.status === "active"
+          ? "⚑ HOLD: the moisture source is not fixed. Remediation can't be finalized until it is repaired and the materials are dry — this scope is not final."
+          : `⚑ HOLD: the report says the source still has to be addressed and nothing confirms it is fixed (“${scan.source.hold}”). Set the source status to Repaired once confirmed — this scope is not final until then.`,
+      );
+      pending.push(
+        scan.source.status === "active"
+          ? "HOLD: the moisture source is not fixed — remediation can't be finalized until it is repaired and the materials are dry"
+          : `HOLD: source of water intrusion not confirmed fixed — the report says it “must be addressed”; remediation can't be finalized until it is confirmed`,
+      );
     }
+    notes.push(...scan.reportNotes);
     if (sharedOther) notes.push(`In one containment with ${group!.rooms.filter((n) => !room.toLowerCase().includes(n.toLowerCase())).join(", ")} — the containment, negative air and clearance lines are on the first room.`);
     const perimCalc = t.perimeterLF != null && t.heightFt ? `${t.perimeterCalc} × ${t.heightFt} ft = ${r1(t.perimeterLF * t.heightFt)} SF of poly (room as containment)` : "room not measured";
     const polySF = t.perimeterLF != null && t.heightFt ? r1(t.perimeterLF * t.heightFt) : null;
     const sharedRooms = group?.primary ? group.rooms : null;
-    if (MR.containment.enabled && sharedRooms) {
+    const area = scan.containmentArea;
+    const noCont = !!area?.none;
+    if (noCont) notes.push("The report lists no containment for this room — only the items named for it are scoped here.");
+    if (noCont) {
+      /* no containment, negative air or clearance lines in this room */
+    } else if (MR.containment.enabled && area?.extent === "localized") {
+      moldAdd({ id: "mold.containment", ruleId: "mold.containment", kind: "mitigation", scopeCategory: "containment", activity: "Set up", item: `localized containment (per the report) — ${ctx.report?.containment?.value.material ?? MR.containment.description}`, quantity: null, unit: "SF", calc: "localized containment — its size isn't in the report; measure the poly walls", justification: "Containment as listed in the assessor's plan." });
+      questions.push(`${room}: measure the localized containment (poly SF) — the report gives no size.`);
+    } else if (MR.containment.enabled && sharedRooms) {
       moldAdd({ id: "mold.containment", ruleId: "mold.containment", kind: "mitigation", scopeCategory: "containment", activity: "Set up", item: `one containment around ${sharedRooms.join(", ")} — ${MR.containment.description}`, quantity: null, unit: "SF", calc: "shared containment — measure its poly walls (room perimeters overlap at the shared openings)", justification: "S520: one containment for the connected rooms with growth." });
       questions.push(`${room}: measure the shared containment poly (SF) around ${sharedRooms.join(", ")}.`);
-    } else if (MR.containment.enabled && !sharedOther)
-      moldAdd({ id: "mold.containment", ruleId: "mold.containment", kind: "mitigation", scopeCategory: "containment", activity: "Set up", item: `containment — ${MR.containment.description}`, quantity: polySF, unit: "SF", calc: perimCalc, justification: "S520: isolate the work area so spores and debris don't spread during removal. Size it to the assessor's plan; a smaller containment around the work area reduces this." });
-    if (MR.negativeAirPerContainment > 0 && !sharedOther)
+    } else if (MR.containment.enabled && !sharedOther && !noCont)
+      moldAdd({ id: "mold.containment", ruleId: "mold.containment", kind: "mitigation", scopeCategory: "containment", activity: "Set up", item: `${area?.extent === "entire" ? "containment of the entire room (per the report)" : "containment"} — ${(area && ctx.report?.containment?.value.material) || MR.containment.description}`, quantity: polySF, unit: "SF", calc: perimCalc, justification: "S520: isolate the work area so spores and debris don't spread during removal. Size it to the assessor's plan; a smaller containment around the work area reduces this." });
+    const scr = area?.scrubber;
+    if (scr && !noCont && !sharedOther) {
+      const vol = t.floorSF != null && t.heightFt ? r1(t.floorSF * t.heightFt) : null;
+      const cfm = vol != null && scr.ach ? Math.ceil((vol * scr.ach) / 60) : null;
+      moldAdd({
+        id: "mold.negair",
+        ruleId: "mold.negativeAir",
+        kind: "equipment",
+        scopeCategory: "containment",
+        activity: "Set",
+        item: `HEPA-filtered air scrubber${scr.hours ? ` — ${scr.hours} hours` : ""}${scr.ach ? ` at ${scr.ach} ACH` : ""} (negative pressure through a window if possible)`,
+        quantity: scr.perContainment,
+        unit: "EA",
+        calc: `${scr.perContainment} per containment (report)${scr.hours ? `; ${scr.hours} h = ${r1(scr.hours / 24)} days` : ""}${scr.ach ? `; ${scr.ach} ACH needs ${cfm != null ? `${vol} CF × ${scr.ach} ÷ 60 = ${cfm} CFM` : "the room volume (not measured) × 8 ÷ 60 CFM"}` : ""}`,
+        justification: "Air scrubber count, run time and air changes as stated in the assessor's plan.",
+      });
+    } else if (MR.negativeAirPerContainment > 0 && !sharedOther && !noCont)
       moldAdd({ id: "mold.negair", ruleId: "mold.negativeAir", kind: "equipment", scopeCategory: "containment", activity: "Set (calculated)", item: "HEPA negative air machine, exhausted outside the containment", quantity: MR.negativeAirPerContainment, unit: "EA", calc: `${MR.negativeAirPerContainment} per containment`, justification: "Keeps the containment under negative pressure during removal and cleaning." });
-    if (MR.dehumidifierPerContainment > 0 && !sharedOther)
+    if (MR.dehumidifierPerContainment > 0 && !sharedOther && !noCont)
       moldAdd({ id: "mold.dehu", ruleId: "mold.dehumidifier", kind: "equipment", scopeCategory: "drying", activity: "Set (calculated)", item: "dehumidifier to hold RH below 50% in the containment", quantity: MR.dehumidifierPerContainment, unit: "EA", calc: `${MR.dehumidifierPerContainment} per containment`, justification: "Growth needs moisture; dry the remaining structure before closing up." });
     moldAdd({ id: "mold.ppe", ruleId: "mold.ppe", kind: "mitigation", scopeCategory: "containment", activity: "Provide", item: MR.ppeDescription, quantity: null, unit: "EA/worker/day", calc: "1 set per worker per entry — crew size and days not set", justification: "Worker protection during mold removal (S520)." });
     if (moldFloorOut) {
@@ -368,7 +415,17 @@ export function analyzeRoom(scanIn: RoomScanData, ctx: RoomContext): RoomAnalysi
       if (MR.antimicrobialAfterCleaning)
         moldAdd({ id: "mold.antimicrobial", ruleId: "mold.antimicrobial", kind: "mitigation", scopeCategory: "antimicrobial", activity: "Apply", item: m.subfloor === "remove" ? "antimicrobial to the exposed joists after cleaning" : "antimicrobial to the cleaned subfloor", quantity: affFloorSF, unit: "SF", calc: floorCalc, justification: "After physical removal and cleaning — not a substitute for it." });
       moldAdd({ id: "mold.dispose", ruleId: "mold.disposal", kind: "mitigation", scopeCategory: "removal", activity: "Bag & dispose", item: "removed materials in sealed 6 mil bags", quantity: affFloorSF, unit: "SF", calc: `same area as removed: ${floorCalc}`, justification: "Removed moldy material leaves the containment sealed." });
+    } else if (m.flooring.affected && m.flooring.action === "sand") {
+      moldAdd({ id: "mold.floor.sand", ruleId: "mold.floorSand", kind: "mitigation", scopeCategory: "cleaning", activity: "Sand", item: `visible discoloration of the ${m.flooring.type || "wood flooring"}`, quantity: affFloorSF, unit: "SF", calc: floorCalc, justification: "The assessor allows sanding the discolored wood floor panels instead of removing them (PM choice)." });
+    } else if (m.flooring.affected && m.flooring.choice === "remove_or_sand") {
+      moldAdd({ id: "mold.floor.choice", ruleId: "mold.floorChoice", kind: "mitigation", scopeCategory: "removal", activity: "Choose", item: `remove the affected ${m.flooring.type || "wood flooring"} OR sand the discoloration (the report allows either)`, quantity: null, unit: "SF", calc: `${floorCalc}; set "Flooring action" to Remove or Sand`, justification: "The assessor's plan leaves this choice open." });
+      questions.push(`${room}: the report allows removing the affected ${m.flooring.type || "wood flooring"} or sanding the discoloration — pick one (Flooring action) to set the lines.`);
     } else if (mold && m.flooring.affected) questions.push(`${room}: ${m.flooring.type || "flooring"} with growth — remove, or clean in place? (S520 removes porous/semi-porous material with growth)`);
+    // items named in the report that aren't a surface removal
+    if (m.moldSpecial.includes("shower_caulking"))
+      moldAdd({ id: "mold.caulking", ruleId: "mold.special", kind: "mitigation", scopeCategory: "cleaning", activity: "Re-seal", item: "shower: scrape out all caulking, sanitize, new silicone seal", quantity: null, unit: "LF", calc: "caulk length not stated in the report — measure the shower perimeter", justification: "Growth on the shower caulking (assessor's plan)." });
+    if (m.moldSpecial.includes("vent"))
+      moldAdd({ id: "mold.vent", ruleId: "mold.special", kind: "mitigation", scopeCategory: "cleaning", activity: "Clean", item: "bathroom vent near the floor", quantity: 1, unit: "EA", calc: "1 vent named in the report", justification: "Growth at the vent (assessor's plan).", flags: m.ventHvacIfInaccessible ? ["If the vent/duct isn't accessible: HVAC company — not in our price."] : [] });
     // framing with growth: cleaned in place, or removed/replaced (structural)
     if (m.framing.growth) {
       const fr = m.framing;
@@ -383,8 +440,25 @@ export function analyzeRoom(scanIn: RoomScanData, ctx: RoomContext): RoomAnalysi
       if (fr.where === "joists" && scan.materials.subfloor === "clean")
         questions.push(`${room}: growth on the floor joists but the subfloor stays — the joists can't be reached through it. Confirm subfloor removal with the assessor.`);
     }
-    moldAdd({ id: "mold.finalclean", ruleId: "mold.cleaningSteps", kind: "mitigation", scopeCategory: "cleaning", activity: "Final clean", item: "containment — HEPA vacuum and damp-wipe all surfaces before clearance", quantity: t.floorSF, unit: "SF", calc: t.floorSF != null ? `${t.floorCalc} (work-area floor)` : "room not measured", justification: "Final detail clean so the area can pass post-remediation verification." });
-    if (MR.postRemediationVerification && !sharedOther)
+    const sc = ctx.report?.surfaceCleaning?.value;
+    if (sc && !noCont && !runOnlyRoom) {
+      const entire = area?.extent === "entire" || (!area && !group);
+      const sf = entire && t.floorSF != null && t.wallNetSF != null && t.ceilingSF != null ? r1(t.floorSF + t.wallNetSF + t.ceilingSF) : null;
+      moldAdd({
+        id: "mold.sanitize",
+        ruleId: "mold.cleaningSteps",
+        kind: "mitigation",
+        scopeCategory: "antimicrobial",
+        activity: "Clean & treat",
+        item: `all surfaces in the containment (walls, floors, ceiling, exposed studs) — ${[sc.hepaVacuum && "HEPA vacuum", sc.sanitize && "deep sanitization", `EPA-registered antimicrobial${sc.product ? ` (${sc.product})` : ""}`].filter(Boolean).join(", ")}`,
+        quantity: sf,
+        unit: "SF",
+        calc: sf != null ? `floor ${t.floorSF} + walls ${t.wallNetSF} + ceiling ${t.ceilingSF} = ${sf} SF` : area?.extent === "localized" ? "localized containment — surface area not stated; measure it" : "room not measured",
+        justification: "All-surface cleaning and treatment per the assessor's plan.",
+      });
+    }
+    if (!noCont) moldAdd({ id: "mold.finalclean", ruleId: "mold.cleaningSteps", kind: "mitigation", scopeCategory: "cleaning", activity: "Final clean", item: "containment — HEPA vacuum and damp-wipe all surfaces before clearance", quantity: t.floorSF, unit: "SF", calc: t.floorSF != null ? `${t.floorCalc} (work-area floor)` : "room not measured", justification: "Final detail clean so the area can pass post-remediation verification." });
+    if (MR.postRemediationVerification && !sharedOther && !noCont)
       add({ id: "mold.pcv", ruleId: "mold.postRemediationVerification", kind: "mitigation", scopeCategory: "note", activity: "Schedule", item: "post-remediation verification (clearance) by an independent licensed assessor", quantity: 1, unit: "EA", calc: "1 per containment", justification: "Containment stays up until clearance passes. Performed by a third party, not by us.", flags: ["Third party — not in our price."] });
     if (mold && m.flooring.affectedPct == null && m.flooring.affected) {
       const partial = ctx.report?.rooms.find((r) => (r.value.name || null) === (scan.reportRoom || null))?.value.coverage;
@@ -465,11 +539,13 @@ export function analyzeRoom(scanIn: RoomScanData, ctx: RoomContext): RoomAnalysi
     for (const d of drafts) if (rj[d.id]) d.justification = `${d.justification} ${rj[d.id]}`;
   }
   if (mold) {
-    const seq = ["mold.containment", "mold.negair", "mold.ppe", "baseboard", "mold.floor.remove", "mold.underlayment.remove", "mold.walls.remove", "mold.insulation.remove", "mold.subfloor.remove", "mold.framing.remove", "mold.subfloor.clean", "mold.walls.cavity", "mold.framing.clean", "mold.antimicrobial", "mold.dehu", "mold.dispose", "mold.finalclean", "mold.pcv"];
+    const seq = ["mold.containment", "mold.negair", "mold.ppe", "baseboard", "mold.floor.remove", "mold.underlayment.remove", "mold.walls.remove", "mold.insulation.remove", "mold.subfloor.remove", "mold.framing.remove", "mold.floor.choice", "mold.floor.sand", "mold.subfloor.clean", "mold.walls.cavity", "mold.encapsulate", "mold.framing.clean", "mold.caulking", "mold.vent", "mold.antimicrobial", "mold.dehu", "mold.dispose", "mold.finalclean", "mold.pcv"];
     const rank = (d: Draft) => (d.kind === "reconstruction" ? 1000 : seq.indexOf(d.id) === -1 ? 500 : seq.indexOf(d.id));
     drafts.sort((a, b) => rank(a) - rank(b));
   }
-  const lines: ScopeLine[] = drafts.map((d) => {
+  const lines: ScopeLine[] = drafts.map((d0) => {
+    const ov = scan.quantityOverrides[d0.id];
+    const d: Draft = ov != null ? { ...d0, quantity: ov, calc: `${ov} ${d0.unit} — entered by the PM (was: ${d0.calc})` } : d0;
     const flags = [...(d.flags ?? [])];
     let status: ScopeLine["status"] = scan.decisions[d.id] ?? "suggested";
     const ex = exclusionFor(d, ctx);
@@ -482,9 +558,23 @@ export function analyzeRoom(scanIn: RoomScanData, ctx: RoomContext): RoomAnalysi
     if (d.quantity == null && d.unit !== "DA" && !d.unit.includes("/")) flags.push("Quantity needs measurements.");
     if (d.unit.includes("/")) flags.push("Set crew size and days.");
     if (scan.lineNotes[d.id]) flags.push(scan.lineNotes[d.id]);
-    if (mold && scan.source.status === "active" && d.kind !== "reconstruction" && !flags.some((f) => f.startsWith("HOLD")))
+    if (mold && (scan.source.status === "active" || (!!scan.source.hold && scan.source.status !== "repaired" && scan.source.status !== "stopped")) && d.kind !== "reconstruction" && !flags.some((f) => f.startsWith("HOLD")))
       flags.push("HOLD — the moisture source is not fixed: don't start until it is repaired and the materials are dry.");
-    return { ...d, rate: null, total: null, evidence: d.evidence ?? scan.moisturePoints.map((p) => p.id), status, flags };
+    const source: ScopeLine["source"] =
+      d.quantity == null
+        ? null
+        : ov != null
+          ? "pm"
+          : /stated by the report|\(report\)|named in the report/.test(d.calc)
+            ? "report"
+            : /not measured|not stated|not confirmed|no quantity/i.test(d.calc)
+              ? null
+              : /\d\s*(ft|LF|SF|CF)\b|×/.test(d.calc)
+                ? "measured"
+                : /“[^”]{3,}”/.test(d.justification)
+                  ? "report"
+                  : "rule";
+    return { ...d, rate: null, total: null, evidence: d.evidence ?? scan.moisturePoints.map((p) => p.id), status, flags, source };
   });
 
   if (scan.reportChanges.length) notes.push(...scan.reportChanges.map((c) => `Mold report changed: ${c}`));

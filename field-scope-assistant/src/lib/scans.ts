@@ -73,6 +73,8 @@ export interface VisitScanView {
     notes: string[];
     qa: { ok: boolean; text: string }[];
     pendingReconstruction: ScopeLine[];
+    /** Pre-send accuracy check: fails if any accepted line lacks a quantity, a justification or a source, or a room is on HOLD. */
+    presend: { ok: boolean; accepted: number; failures: string[] };
   };
   sketchSvg: string;
 }
@@ -208,6 +210,20 @@ export async function getVisitScans(projectId: string, visitId: string): Promise
     if (!visit.facts.reconstructionRequested) pending.push(...analysis.lines.filter((l) => l.kind === "reconstruction" && l.status !== "rejected" && l.status !== "excluded"));
   }
   const allLines = analyzed.flatMap((a) => a.analysis.lines);
+  const roomLabelOf = (id: string) => {
+    const l = loc(id);
+    return l ? fullLabel(l) : "Room";
+  };
+  const acceptedLines = analyzed.flatMap((a) => (roomsOut.has(a.rec.locationId) ? [] : a.analysis.lines.filter((l) => l.status === "accepted").map((l) => ({ l, room: roomLabelOf(a.rec.locationId) }))));
+  const failures: string[] = [];
+  for (const { l, room } of acceptedLines) {
+    const what = `${room}: ${l.activity} ${l.item}`;
+    if (l.quantity == null && !l.unit.includes("DA")) failures.push(`${what} — no quantity`);
+    if (!l.justification.trim()) failures.push(`${what} — no justification`);
+    if (l.quantity != null && !l.source) failures.push(`${what} — no source for the quantity`);
+  }
+  for (const a of analyzed) if (a.analysis.pending.some((x) => x.startsWith("HOLD")) && !roomsOut.has(a.rec.locationId)) failures.push(`${roomLabelOf(a.rec.locationId)}: HOLD — moisture source not confirmed fixed`);
+  const presend = { ok: failures.length === 0, accepted: acceptedLines.length, failures };
   const decided = allLines.filter((l) => l.status === "accepted" || l.status === "rejected").length;
   const qa = [
     { ok: analyzed.length > 0, text: "At least one room scanned" },
@@ -216,6 +232,9 @@ export async function getVisitScans(projectId: string, visitId: string): Promise
     { ok: analyzed.every((a) => a.rec.data.loss.type !== "water" || a.rec.data.loss.category != null), text: "Water category confirmed in every water room" },
     { ok: allLines.filter((l) => l.status === "accepted" && /^(Remove|Flood cut)/.test(l.activity)).every((l) => !!l.justification), text: "Every accepted removal has a justification" },
     { ok: allLines.length === 0 || decided === allLines.filter((l) => l.status !== "excluded").length, text: "Every suggested line accepted or rejected" },
+    { ok: acceptedLines.every(({ l }) => l.quantity != null || l.unit.includes("DA")), text: "Accuracy: every accepted line has a quantity" },
+    { ok: acceptedLines.every(({ l }) => !!l.justification.trim()), text: "Accuracy: every accepted line has a justification" },
+    { ok: acceptedLines.every(({ l }) => l.quantity == null || !!l.source), text: "Accuracy: every accepted quantity has a source (report quote, measurement, company rule or PM entry)" },
     { ok: visit.facts.exclusions.every((e) => e.signature === "signed"), text: "Exclusions have a signed customer declination" },
     { ok: analyzed.every((a) => a.rec.data.moisturePoints.length > 0 || a.rec.data.loss.type !== "water"), text: "Moisture points mapped in water rooms" },
     { ok: analyzed.every((a) => a.rec.data.loss.type !== "mold" || a.rec.data.source.status === "repaired" || a.rec.data.source.status === "stopped"), text: "Mold: moisture source confirmed fixed (remediation can't be finalized otherwise)" },
@@ -241,6 +260,7 @@ export async function getVisitScans(projectId: string, visitId: string): Promise
       notes,
       qa,
       pendingReconstruction: pending,
+      presend,
     },
     sketchSvg: (await import("./sketch")).toSvg(sketchFor(analyzed, locations, roomsOut)),
   };
@@ -403,6 +423,41 @@ export async function previewVisit(projectId: string, visitId: string, overrides
   }
   const analyzed = analyzeAll(all, locs, visit.facts, rules, yearBuilt, visit.serviceLine, await reportsFor(projectId, all));
   return analyzed.map(({ rec, analysis }) => ({ locationId: rec.locationId, label: fullLabel(locs.find((l) => l.id === rec.locationId)!), lines: analysis.lines, pending: analysis.pending }));
+}
+
+/** The PM types a quantity on a line (null clears it); it shows as "entered by the PM". */
+export async function setLineQuantity(projectId: string, visitId: string, locationId: string, lineId: string, quantity: number | null) {
+  const rec = (await rows(projectId, visitId)).find((r) => r.locationId === locationId);
+  if (!rec) throw new repo.NotFound("Room scan not found.");
+  if (quantity != null && (!Number.isFinite(quantity) || quantity < 0)) throw new UserError("Enter a quantity of 0 or more.");
+  const quantityOverrides = { ...rec.data.quantityOverrides };
+  if (quantity == null) delete quantityOverrides[lineId];
+  else quantityOverrides[lineId] = Math.round(quantity * 100) / 100;
+  await writeScan(projectId, visitId, locationId, { ...rec.data, quantityOverrides });
+  await persistAndSync(projectId, visitId, `Quantity entered on ${lineId}.`);
+  return getVisitScans(projectId, visitId);
+}
+
+/**
+ * One tap: accept every suggested line that is ready — it has a quantity, a justification and a
+ * source. Lines that still need a quantity (or a PM choice) stay suggested. Reconstruction only
+ * when a reconstruction estimate is requested. Optionally limited to some rooms.
+ */
+export async function acceptReadyLines(projectId: string, visitId: string, locationIds?: string[]) {
+  const view = await getVisitScans(projectId, visitId);
+  let accepted = 0;
+  let notReady = 0;
+  for (const r of view.rooms) {
+    if (r.excluded || (locationIds && !locationIds.includes(r.locationId))) continue;
+    const sug = r.data.lines.filter((l) => l.status === "suggested" && (l.kind !== "reconstruction" || view.reconstructionRequested));
+    const ready = sug.filter((l) => l.quantity != null && !!l.justification.trim() && !!l.source && l.activity !== "Choose");
+    notReady += sug.length - ready.length;
+    if (ready.length) {
+      await decideLines(projectId, visitId, r.locationId, ready.map((l) => l.id), "accept");
+      accepted += ready.length;
+    }
+  }
+  return { accepted, notReady, view: await getVisitScans(projectId, visitId) };
 }
 
 /** Writes PM-review state on one room (decisions reset, line notes, change summary) and re-syncs. */

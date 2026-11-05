@@ -24,6 +24,30 @@ export interface RoomFinding {
   vague: string | null;
   /** The statements each value came from (for quotes on phone). */
   quotes: { dims: string | null; area: string | null; coverage: string | null };
+  /** Surfaces the report lists with growth in this room ([] = not itemized). */
+  surfaces?: Surface[];
+  /** Which wall, when the report names it by feature ("A/C wall", "rear wall"). */
+  wallLabel?: string | null;
+  /** Elevated spore counts in this room's air sample. */
+  airElevated?: boolean;
+}
+
+export type Surface = "wall" | "floor" | "caulking" | "vent" | "ceiling" | "cabinet" | "baseboard" | "air";
+
+/** A drywall removal the report states: a height for named rooms, or a stated SF. */
+export interface WallRemoval {
+  rooms: string[];
+  wallLabel: string;
+  heightIn: number | null;
+  statedSF: number | null;
+  approximate: boolean;
+  entireWall: boolean;
+}
+
+/** Two parts of the report that disagree — never resolved silently. */
+export interface ReportConflict {
+  text: string;
+  quotes: { quote: string; page: number }[];
 }
 type F<T> = Finding<T> | null;
 
@@ -48,7 +72,15 @@ export interface ReportFindings {
   affectedAreaSF: F<number>;
   /** Whole floor (pct 100) or part of it (pct when stated). */
   floorCoverage: F<{ whole: boolean; pct: number | null }>;
-  containment: F<{ level: "full" | "limited" | "none" | "unspecified"; negativeAir: boolean }>;
+  containment: F<{
+    level: "full" | "limited" | "none" | "unspecified";
+    negativeAir: boolean;
+    /** Containment areas the report lists, e.g. "(a) a localized area at the Bedroom, (b) the entire Den". */
+    areas?: { room: string; extent: "localized" | "entire" | null }[];
+    /** Separate containments per area (lettered list / "each containment area"), not one around all rooms. */
+    separate?: boolean;
+    material?: string | null;
+  }>;
   removalExtent: F<string>;
   subfloor: F<"clean" | "remove">;
   wallsGrowth: F<{ growth: boolean; walls: string[]; heightIn: number | null }>;
@@ -62,6 +94,27 @@ export interface ReportFindings {
   flooringContinuous: F<{ continues: boolean; rooms: string[] }>;
   moldType: F<string>;
   condition: F<string>;
+  /** "1 HEPA-filtered air scrubber … for 72 hours at 8 ACH in each containment area – Bedroom, Den, …" */
+  airScrubber?: F<{ perContainment: number; hours: number | null; ach: number | null; rooms: string[] }>;
+  wallRemovals?: Finding<WallRemoval>[];
+  /** Extra cut beyond affected drywall the plan states (inches). */
+  cutBeyondIn?: F<number>;
+  /** Flooring treatment options for named rooms ("either removal … or sanding …"). */
+  floorTreatment?: F<{ rooms: string[]; options: ("remove" | "sand")[] }>;
+  framingCleaning?: F<string>;
+  encapsulant?: F<string>;
+  surfaceCleaning?: F<{ hepaVacuum: boolean; sanitize: boolean; product: string | null }>;
+  specialItems?: Finding<{ room: string; kind: "shower_caulking" | "vent"; hvacIfInaccessible: boolean }>[];
+  packout?: F<string>;
+  baseboardRemovals?: Finding<{ room: string }>[];
+  clearanceConditions?: Finding<string>[];
+  /** "The source of water intrusion must be addressed …" — NOT the same as fixed. */
+  sourceMustBeAddressed?: F<string>;
+  hazardNote?: F<string>;
+  otherConcerns?: Finding<string>[];
+  conflicts?: ReportConflict[];
+  /** The report refers to lab results but no lab tables are in its text (images or not included). */
+  labTablesMissing?: F<string>;
   /** Items the report leaves open; `quote` is set when it says so explicitly (e.g. "to be determined"). */
   unanswered: { key: FindingKey; label: string; quote: string | null }[];
 }
@@ -130,7 +183,9 @@ export function findingText(key: FindingKey, f: ReportFindings): string | null {
       return c.whole ? "Whole floor" : `Part of the floor${c.pct != null ? ` (${c.pct}%)` : ""}`;
     }
     case "containment": {
-      const c = v as { level: string; negativeAir: boolean };
+      const c = v as { level: string; negativeAir: boolean; areas?: { room: string; extent: string | null }[]; separate?: boolean };
+      if (c.areas?.length)
+        return `${c.separate ? `${c.areas.length} separate containments` : "One containment"}: ${c.areas.map((a) => `${a.room}${a.extent ? ` (${a.extent === "entire" ? "entire room" : "localized"})` : ""}`).join(", ")}${c.negativeAir ? "; negative pressure" : ""}`;
       return `${c.level === "unspecified" ? "Containment (level not stated)" : `${c.level[0].toUpperCase()}${c.level.slice(1)} containment`}${c.negativeAir ? " with negative air" : ""}`;
     }
     case "subfloor":

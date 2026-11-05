@@ -60,7 +60,10 @@ export function takeoff(m: Measurements): Takeoff {
   const floorSF = m.lengthFt && m.widthFt ? m.lengthFt * m.widthFt : null;
   const perimeter = walls.length ? walls.reduce((a, w) => a + w.lengthFt, 0) : null;
   const openingsSF = m.openings.reduce((a, o) => a + sfOf(o), 0);
-  const gross = perimeter != null && m.heightFt ? perimeter * m.heightFt : null;
+  // Wall lengths entered as segments must close the room when length × width is also given;
+  // otherwise wall areas would be built from a partial perimeter — leave them blank and say why.
+  const closes = !(m.segments?.length && m.lengthFt && m.widthFt) || Math.abs((perimeter ?? 0) - 2 * (m.lengthFt + m.widthFt)) <= 1;
+  const gross = perimeter != null && m.heightFt && closes ? perimeter * m.heightFt : null;
   const net = gross != null ? Math.max(0, gross - openingsSF) : null;
   return {
     measured: floorSF != null || perimeter != null,
@@ -72,8 +75,9 @@ export function takeoff(m: Measurements): Takeoff {
     wallGrossSF: gross != null ? r1(gross) : null,
     openingsSF: r1(openingsSF),
     wallNetSF: net != null ? r1(net) : null,
-    wallCalc:
-      gross != null
+    wallCalc: !closes
+      ? `wall lengths entered (${r1(perimeter ?? 0)} LF) don't add up to the room perimeter 2 × (${r1(m.lengthFt!)} + ${r1(m.widthFt!)}) = ${r1(2 * (m.lengthFt! + m.widthFt!))} LF — wall areas not computed`
+      : gross != null
         ? `${r1(perimeter!)} LF × ${ft(m.heightFt!)} = ${r1(gross)} SF${openingsSF ? ` − openings ${r1(openingsSF)} SF = ${r1(net!)} SF` : ""}`
         : "wall height or lengths not measured",
     ceilingSF: floorSF != null ? r1(floorSF) : null,

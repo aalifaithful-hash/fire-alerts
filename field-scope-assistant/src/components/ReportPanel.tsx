@@ -37,6 +37,7 @@ export default function ReportPanel({ projectId, visitId, onApplied }: { project
   const [busy, setBusy] = useState("");
   const [pct, setPct] = useState<number | null>(null);
   const [picked, setPicked] = useState<Record<string, boolean>>({});
+  const [acceptMsg, setAcceptMsg] = useState("");
   const input = useRef<HTMLInputElement>(null);
   const base = `/api/projects/${projectId}/visits/${visitId}/report`;
 
@@ -66,13 +67,28 @@ export default function ReportPanel({ projectId, visitId, onApplied }: { project
       setPct(null);
     }
   };
+  // Upload → if the report is this job's and agrees with the scan, it is applied right away (rooms
+  // created, lines proposed). Anything that disagrees waits for the PM. Lines always stay "suggested".
   const onFile = (f: File) =>
-    run("upload", () =>
-      uploadProjectPdf(projectId, f, setPct, { direct: !!status?.blobUploads, kind: "mold_report" }).then((r) => {
-        const w = (r as { document?: { wrongReport?: string | null } }).document?.wrongReport;
-        if (w) window.alert(w);
-      }),
-    );
+    run("upload", async () => {
+      const r = await uploadProjectPdf(projectId, f, setPct, { direct: !!status?.blobUploads, kind: "mold_report" });
+      const doc = (r as { document?: { id: string; status: string; wrongReport?: string | null; wrongType?: string | null } }).document;
+      if (doc?.wrongReport) window.alert(doc.wrongReport);
+      if (doc?.wrongType) window.alert(doc.wrongType);
+      if (doc?.status !== "ready") return;
+      const d = await api<View>(base);
+      const a0 = d.active;
+      if (a0 && a0.id === doc.id && !a0.applied && a0.mismatches.length === 0 && a0.changes.every((c) => !c.conflict)) {
+        await api(`${base}/apply`, { body: { documentId: a0.id, keys: a0.changes.map((c) => c.id) } });
+        onApplied();
+      }
+    });
+  const acceptReady = () =>
+    run("accept", async () => {
+      const r = await api<{ accepted: number; notReady: number }>(`/api/projects/${projectId}/visits/${visitId}/scans/accept-ready`, { body: { locationIds: undefined } });
+      setAcceptMsg(`Accepted ${r.accepted} ready line${r.accepted === 1 ? "" : "s"}${r.notReady ? ` · ${r.notReady} still need a quantity or a choice — open each room` : ""}.`);
+      onApplied();
+    });
 
   if (!v) return null;
   const a = v.active;
@@ -130,6 +146,10 @@ export default function ReportPanel({ projectId, visitId, onApplied }: { project
 
       {a && (
         <>
+          <div className="small" aria-label="Report progress">
+            <strong>Filled from the report: {a.findings.filter((r) => r.stated === "found").length}</strong> · <span style={{ color: "var(--amber, #b7791f)" }}>still missing: {a.stillMissing.length}</span>
+            {a.stillMissing.some((m) => m.startsWith("HOLD")) && <strong style={{ color: "var(--fire, #c53030)" }}> · HOLD — source not confirmed fixed</strong>}
+          </div>
           <details open={!a.applied}>
             <summary>
               <strong>Report findings</strong> <span className="small muted">— {a.filename}</span>
@@ -244,7 +264,16 @@ export default function ReportPanel({ projectId, visitId, onApplied }: { project
               {busy === "apply" ? "Applying…" : a.applied ? "Apply the ticked changes" : "Apply report to the scan"}
             </button>
           )}
-          {a.applied && <div className="small">✓ Applied to {multi ? a.rooms.map((r) => r.target ?? r.name).join(", ") : a.room?.label}. The lines below are proposed — accept or reject each one in its room. Lines the report changed are marked.</div>}
+          {a.applied && (
+            <div className="stack" style={{ gap: 6 }}>
+              <div className="small">✓ Applied to {multi ? a.rooms.map((r) => r.target ?? r.name).join(", ") : a.room?.label}. The lines are proposed — accept them all at once, or accept/reject each one in its room. Lines the report changed are marked.</div>
+              <button className="btn primary" disabled={!!busy} onClick={acceptReady}>
+                {busy === "accept" ? "Accepting…" : "Accept all ready lines"}
+              </button>
+              <div className="small muted">Ready = has a quantity, a justification and a source. Lines that need a measurement or a choice stay open.</div>
+              {acceptMsg && <div className="small">{acceptMsg}</div>}
+            </div>
+          )}
 
           <div className={`card small ${a.stillMissing.length ? "warn" : "ok"}`}>
             <strong>{a.stillMissing.length ? "Still missing after the report" : "The report answers every pending item"}</strong>

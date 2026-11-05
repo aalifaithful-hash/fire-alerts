@@ -11,15 +11,18 @@ type Editable = Omit<RoomScanData, "lines" | "decisions">;
 type Props = { ws: WorkspaceData; projectId: string; visitId: string | null; reload: () => Promise<WorkspaceData | null>; flash: (m: string) => void };
 
 const blank = (): Editable => ({
-  source: { where: "unknown", fixture: null, wall: null, positionFt: null, surface: null, status: "unknown", hoursSinceLoss: null, waterSource: null },
+  source: { where: "unknown", fixture: null, wall: null, positionFt: null, surface: null, status: "unknown", hoursSinceLoss: null, waterSource: null, hold: null },
   loss: { type: null, category: null, waterClass: null, smokeType: null, assessmentReport: null },
   materials: {
-    flooring: { type: null, affected: false, affectedPct: null, action: null, continuousRun: null, breakNote: null },
+    flooring: { type: null, affected: false, affectedPct: null, action: null, choice: null, continuousRun: null, breakNote: null },
     baseboard: { affected: false, walls: [], action: null },
-    walls: { material: null, affectedWalls: [], wetHeightIn: null, floodCut: "auto" },
+    walls: { material: null, affectedWalls: [], wetHeightIn: null, floodCut: "auto", statedRemovalSF: null, statedApproximate: false, cutSource: null },
     ceiling: { affected: false, affectedPct: null, action: null },
     insulation: false,
     subfloor: null,
+    encapsulate: false,
+    moldSpecial: [],
+    ventHvacIfInaccessible: false,
     framing: { growth: false, where: null, action: null },
     cabinets: { affected: false, lf: null, detach: false },
     fixtures: [],
@@ -35,6 +38,9 @@ const blank = (): Editable => ({
   containmentGroup: null,
   lineNotes: {},
   reportChanges: [],
+  containmentArea: null,
+  reportNotes: [],
+  quantityOverrides: {},
 });
 const WALLS = ["N", "E", "S", "W"];
 const num = (v: string) => (v.trim() === "" || Number.isNaN(Number(v)) ? null : Number(v));
@@ -123,6 +129,12 @@ export default function ScanTab({ ws, projectId, visitId, reload, flash }: Props
   const decide = (ids: string[], action: "accept" | "reject" | "reset") =>
     run("decide", async () => {
       const v = await api<VisitScanView>(`${base}/scans/${sel}/lines`, { body: { lineIds: ids, action } });
+      void reload();
+      return v;
+    });
+  const setQty = (lineId: string, quantity: number | null) =>
+    run("qty", async () => {
+      const v = await api<VisitScanView>(`${base}/scans/${sel}/quantity`, { body: { lineId, quantity } });
       void reload();
       return v;
     });
@@ -222,7 +234,7 @@ export default function ScanTab({ ws, projectId, visitId, reload, flash }: Props
               <Txt label="Flooring type (carpet+pad, LVP, hardwood, tile…)" value={m.flooring.type} onChange={(v) => upd((d) => (d.materials.flooring.type = v))} />
               <Chk label="Flooring affected" checked={m.flooring.affected} onChange={(v) => upd((d) => (d.materials.flooring.affected = v))} />
               <Num label="% of floor affected" value={m.flooring.affectedPct} onChange={(v) => upd((d) => (d.materials.flooring.affectedPct = v))} />
-              <Sel label="Flooring action" value={m.flooring.action ?? ""} onChange={(v) => upd((d) => (d.materials.flooring.action = (v || null) as Editable["materials"]["flooring"]["action"]))} options={[["", "—"], ["dry_in_place", "Dry in place"], ["remove", "Remove"], ["replace", "Replace"]]} />
+              <Sel label="Flooring action" value={m.flooring.action ?? ""} onChange={(v) => upd((d) => (d.materials.flooring.action = (v || null) as Editable["materials"]["flooring"]["action"]))} options={[["", "—"], ["dry_in_place", "Dry in place"], ["remove", "Remove"], ["replace", "Replace"], ["sand", "Sand (mold: discoloration)"]]} />
               {f.loss.type === "mold" && <Sel label="Subfloor (mold)" value={m.subfloor ?? ""} onChange={(v) => upd((d) => (d.materials.subfloor = (v || null) as Editable["materials"]["subfloor"]))} options={[["", "—"], ["clean", "Clean & treat (stays)"], ["remove", "Remove"]]} />}
               <Txt label="Continuous run (same name in every room it runs through)" value={m.flooring.continuousRun} onChange={(v) => upd((d) => (d.materials.flooring.continuousRun = v))} />
               <Txt label="Natural break (e.g. threshold at hallway)" value={m.flooring.breakNote} onChange={(v) => upd((d) => (d.materials.flooring.breakNote = v))} />
@@ -385,7 +397,7 @@ export default function ScanTab({ ws, projectId, visitId, reload, flash }: Props
                       {k === "reconstruction" && !recon ? " — pending (not estimated)" : ""}
                     </h3>
                     {group.map((l) => (
-                      <LineRow key={l.id} line={l} disabled={!!busy || (k === "reconstruction" && !recon)} onDecide={(a) => decide([l.id], a)} />
+                      <LineRow key={l.id} line={l} disabled={!!busy || (k === "reconstruction" && !recon)} onDecide={(a) => decide([l.id], a)} onQuantity={(q) => setQty(l.id, q)} />
                     ))}
                   </div>
                 );
@@ -440,6 +452,16 @@ export default function ScanTab({ ws, projectId, visitId, reload, flash }: Props
               </div>
             ))}
             {view.summary.dehumidifiers && <div className="muted">{view.summary.dehumidifiers.calc}</div>}
+            <div className={`card small ${view.summary.presend.ok ? "ok" : "warn"}`} style={{ margin: "6px 0" }} aria-label="Pre-send accuracy check">
+              <strong>{view.summary.presend.ok ? "✓ Pre-send accuracy check passed" : `Pre-send accuracy check: ${view.summary.presend.failures.length} problem${view.summary.presend.failures.length === 1 ? "" : "s"} — files are marked DRAFT`}</strong>
+              {!view.summary.presend.ok && (
+                <ul style={{ paddingLeft: 18, margin: "4px 0 0" }}>
+                  {view.summary.presend.failures.map((f, i) => (
+                    <li key={i}>{f}</li>
+                  ))}
+                </ul>
+              )}
+            </div>
             <strong>Before sending</strong>
             {view.summary.qa.map((q, i) => (
               <div key={i} style={{ color: q.ok ? "var(--green)" : "var(--amber)" }}>
@@ -479,8 +501,11 @@ export default function ScanTab({ ws, projectId, visitId, reload, flash }: Props
   );
 }
 
-function LineRow({ line: l, onDecide, disabled }: { line: ScopeLine; onDecide: (a: "accept" | "reject" | "reset") => void; disabled: boolean }) {
+const SOURCE_LABEL: Record<string, string> = { report: "from the report", measured: "from your measurements", rule: "company default", pm: "entered by you" };
+
+function LineRow({ line: l, onDecide, onQuantity, disabled }: { line: ScopeLine; onDecide: (a: "accept" | "reject" | "reset") => void; onQuantity: (q: number | null) => void; disabled: boolean }) {
   const chip = l.status === "accepted" ? "green" : l.status === "rejected" ? "" : l.status === "excluded" ? "red" : "amber";
+  const [qty, setQtyText] = useState("");
   return (
     <div className="card" style={{ marginBottom: 6, opacity: l.status === "rejected" || l.status === "excluded" ? 0.6 : 1 }} data-line={l.id}>
       <div className="row">
@@ -492,6 +517,7 @@ function LineRow({ line: l, onDecide, disabled }: { line: ScopeLine; onDecide: (
       </div>
       <div className="small muted" style={{ marginTop: 2 }}>
         {l.calc}
+        {l.source ? <span className="chip" style={{ marginLeft: 6 }}>{SOURCE_LABEL[l.source]}</span> : l.quantity == null ? <span className="chip amber" style={{ marginLeft: 6 }}>needs a quantity</span> : null}
       </div>
       <div className="small" style={{ marginTop: 2 }}>
         {l.justification}
@@ -517,6 +543,29 @@ function LineRow({ line: l, onDecide, disabled }: { line: ScopeLine; onDecide: (
             <button className="btn sm ghost" disabled={disabled} onClick={() => onDecide("reset")}>
               Undo
             </button>
+          )}
+          {l.activity !== "Choose" && (
+            <span className="row" style={{ gap: 4, marginLeft: "auto" }}>
+              <input
+                className="in"
+                style={{ width: 70 }}
+                inputMode="decimal"
+                placeholder={l.quantity == null ? "qty" : String(l.quantity)}
+                value={qty}
+                onChange={(e) => setQtyText(e.target.value)}
+                aria-label={`Quantity for ${l.activity} ${l.item}`}
+              />
+              <button
+                className="btn sm"
+                disabled={disabled || (qty.trim() !== "" && !Number.isFinite(Number(qty)))}
+                onClick={() => {
+                  onQuantity(qty.trim() === "" ? null : Number(qty));
+                  setQtyText("");
+                }}
+              >
+                {qty.trim() === "" && l.source === "pm" ? "Clear" : "Set"}
+              </button>
+            </span>
           )}
         </div>
       )}

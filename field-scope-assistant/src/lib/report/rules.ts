@@ -1,6 +1,6 @@
 import { findStreetAddresses, normalizeDate } from "../fnol";
 import { findRoomName, ROOM_PATTERNS } from "../rooms";
-import { FINDING_LABELS, SCOPE_FINDINGS, type Finding, type FindingKey, type ReportFindings, type RoomFinding } from "./types";
+import { FINDING_LABELS, SCOPE_FINDINGS, type Finding, type FindingKey, type ReportConflict, type ReportFindings, type RoomFinding, type Surface, type WallRemoval } from "./types";
 
 /**
  * Rules-based mold-report reader (no AI). Works on selectable PDF text: wrapped lines are joined
@@ -25,13 +25,38 @@ const ROOM_START = new RegExp(`^(?:(?:room|area|location)\\s*\\d*\\s*[:\\-–]\\
 /** Joins wrapped lines into statements (a line continues the previous one unless it starts a label, heading or new sentence). */
 export function statements(pages: string[]): Statement[] {
   const out: Statement[] = [];
+  // Page headers/footers repeated on most pages (client block, company, "Page 7 of 52") are dropped
+  // after page 1 — otherwise they break sentences that run across pages.
+  const norm = (l: string) => l.replace(/\s+/g, " ").trim().replace(/\d+/g, "#");
+  const seen = new Map<string, number>();
+  pages.forEach((txt) => new Set(txt.split(/\r?\n/).map(norm).filter(Boolean)).forEach((l) => seen.set(l, (seen.get(l) ?? 0) + 1)));
+  const repeated = (l: string) => pages.length >= 3 && (seen.get(norm(l)) ?? 0) >= Math.max(3, pages.length * 0.5);
+  const FUNCTION_END = /\b(the|in|of|and|at|to|a|an|by|for|with|from|on|or|as|that|is|are|be|this|these|which|than)$/i;
   pages.forEach((txt, i) => {
     for (const raw of txt.split(/\r?\n/)) {
       const line = raw.replace(/\s+/g, " ").trim();
       if (!line || /^SAMPLE - TEST FIXTURE/i.test(line)) continue;
+      if (i > 0 && repeated(line)) continue;
       const prev = out[out.length - 1];
+      // "Prepared for:" on its own line, value on the next
+      if (prev && /^[A-Z][A-Za-z /&()'-]{1,30}:$/.test(prev.text) && !LABEL_START.test(line) && !/^[•\-–]/.test(line)) {
+        prev.text = `${prev.text} ${line}`;
+        continue;
+      }
+      const startsLower = /^[a-z(“"']/.test(line) || (/^[0-9]/.test(line) && !LABEL_START.test(prev?.text ?? ""));
+      // a long sentence broken mid-way by the page layout ("… in the Primary" / "Bathroom, clean the vent …")
+      const midSentence =
+        !!prev && !LABEL_START.test(prev.text) && /[A-Za-z0-9,]$/.test(prev.text) && prev.text.split(/\s+/).length >= 8 && /^[A-Z][A-Za-z/]*\b/.test(line) && !/^[A-Z][A-Za-z ]{0,40}:(\s|$)/.test(line);
       const continues =
-        prev && prev.page === i + 1 && !/[.:;!?]$/.test(prev.text) && !LABEL_START.test(line) && !HEADING.test(line) && !HEADING.test(prev.text) && !ROOM_START.test(line) && /^[a-z0-9(“"']/.test(line);
+        prev &&
+        prev.page >= i &&
+        !/[.:;!?]$/.test(prev.text) &&
+        !LABEL_START.test(line) &&
+        !HEADING.test(line) &&
+        !(HEADING.test(prev.text) && prev.text.split(/\s+/).length <= 6) &&
+        !ROOM_START.test(line) &&
+        !/^[•\-–]\s/.test(line) &&
+        (startsLower || FUNCTION_END.test(prev.text) || midSentence);
       if (continues) prev.text = `${prev.text} ${line}`;
       else out.push({ text: line, page: i + 1, room: null });
     }
@@ -48,6 +73,25 @@ export function statements(pages: string[]): Statement[] {
 }
 
 const fnd = <T>(value: T, s: Statement): Finding<T> => ({ value, quote: s.text, page: s.page, room: s.room });
+/** The single sentence of a statement that matches — quotes stay short and exact. */
+const sentence = (s: Statement, re: RegExp): Statement => {
+  const parts = s.text.split(/(?<=[.!?])\s+(?=[A-Z(•-])/);
+  const hit = parts.find((x) => re.test(x));
+  return hit ? { ...s, text: hit.trim() } : s;
+};
+const firstSentence = (S: Statement[], re: RegExp, not?: RegExp): Statement | null => {
+  for (const s of S) {
+    const x = sentence(s, re);
+    if (re.test(x.text) && !(not && not.test(x.text))) return x;
+  }
+  return null;
+};
+const WORD_NUM: Record<string, number> = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, twelve: 12, eighteen: 18, "twenty-four": 24 };
+const toNum = (x: string) => WORD_NUM[x.toLowerCase()] ?? Number(x.replace(/,/g, ""));
+/** Every room named in a phrase ("the Bedroom, Den, and Kitchen Area" → Bedroom, Den, Kitchen). */
+export function findRoomNames(text: string): string[] {
+  return [...new Set(text.split(/,|;|\band\b|\/(?![Dd]ryer)/).map((x) => findRoomName(x)).filter((x): x is string => !!x))];
+}
 const labeled = (S: Statement[], labels: string) => {
   const re = new RegExp(`^(?:${labels})\\s*[:\\-–]\\s*(.+)$`, "i");
   for (const s of S) {
@@ -144,13 +188,13 @@ export function rulesAnalyze(pages: string[]): ReportFindings {
   const reportType: ReportFindings["reportType"] = moldSignals > 0 ? "mold" : waterSignals > 0 ? "water" : "other";
 
   // --- who / where ---
-  const addrL = labeled(S, "property|property address|site|site address|project address|location|address|subject property");
+  const addrL = labeled(S, "property|property address|site|site address|project address|location|address|subject property|conducted at|inspection address|property location");
   const addrText = addrL?.value ?? findStreetAddresses(S.slice(0, 15).map((s) => s.text).join("\n"))[0] ?? null;
   const addrS = addrL?.s ?? (addrText ? S.find((s) => s.text.includes(addrText)) ?? null : null);
   const address = addrText && addrS ? fnd(addrText.replace(/\s*,?\s*(?:apt\.?|apartment|unit|suite|#)\s*[0-9A-Z-]+\b/i, "").replace(/\s+,/g, ","), addrS) : null;
   const unitM = addrText?.match(/(?:apt\.?|apartment|unit|suite|#)\s*([0-9A-Z-]{1,8})\b/i);
   const unit = unitM && addrS ? fnd(unitM[1], addrS) : null;
-  const custL = labeled(S, "prepared for|client|customer|owner|occupant|homeowner|tenant|insured");
+  const custL = labeled(S, "prepared for|client name|client|customer|owner|occupant|homeowner|tenant|insured");
   const customer = custL ? fnd(custL.value, custL.s) : null;
   const assL = labeled(S, "assessor|inspector|prepared by|assessed by|consultant");
   const assessor = assL ? fnd(assL.value, assL.s) : null;
@@ -159,9 +203,66 @@ export function rulesAnalyze(pages: string[]): ReportFindings {
   const reportDate = dateL && d ? fnd(d, dateL.s) : null;
 
   // --- rooms (one section per room; a report not split by room is one section) ---
+  // itemized lists: "Mold growth confirmed … in the following areas: • Bedroom Wall by A/C • …"
+  const listAfter = (re: RegExp) => {
+    const i = S.findIndex((s) => re.test(s.text));
+    const items: Statement[] = [];
+    if (i >= 0) for (let j = i + 1; j < S.length && /^[•▪◦\-–]\s/.test(S[j].text); j++) items.push({ ...S[j], text: S[j].text.replace(/^[•▪◦\-–]\s*/, "") });
+    return items;
+  };
+  const growthItems = listAfter(/\b(mold growth|visible mold|growth)\b[^.]*\b(confirmed|detected|observed|found|identified)\b[^.]*\b(following|these)\s+(areas|locations)\b/i);
+  const airItems = listAfter(/\belevated\b[^.]*\b(spore counts?|mold counts?|levels)\b[^.]*\b(following|these)\s+(areas|locations)\b/i);
+  const surfaceOf = (t: string): Surface =>
+    /caulk/i.test(t) ? "caulking" : /\bvents?\b/i.test(t) ? "vent" : /\bfloor/i.test(t) ? "floor" : /ceiling/i.test(t) ? "ceiling" : /cabinet/i.test(t) ? "cabinet" : /base ?board|base molding/i.test(t) ? "baseboard" : "wall";
+  const itemized = new Map<string, { stmt: Statement; surfaces: Surface[]; wallLabel: string | null; air: boolean; floorQuote: string | null }>();
+  for (const it of growthItems) {
+    const n = findRoomName(it.text);
+    if (!n) continue;
+    const e = itemized.get(n) ?? { stmt: it, surfaces: [], wallLabel: null, air: false, floorQuote: null };
+    const sf = surfaceOf(it.text);
+    if (!e.surfaces.includes(sf)) e.surfaces.push(sf);
+    if (sf === "floor") e.floorQuote = it.text;
+    if (sf === "wall" && !e.wallLabel) {
+      const by = it.text.match(/\b(?:by|behind|under|near)\s+(?:the\s+)?([A-Za-z/]+)/i);
+      e.wallLabel = by ? `${by[1]} wall` : /\b(rear|back)\b/i.test(it.text) ? "rear wall" : null;
+    }
+    itemized.set(n, e);
+  }
+  for (const it of airItems) {
+    const n = findRoomName(it.text);
+    if (!n) continue;
+    const e = itemized.get(n) ?? { stmt: it, surfaces: [], wallLabel: null, air: false, floorQuote: null };
+    e.air = true;
+    itemized.set(n, e);
+  }
+
   const names = [...new Set(S.map((s) => s.room).filter((x): x is string => !!x))];
   const rooms: Finding<RoomFinding>[] = [];
-  if (names.length) {
+  if (!names.length && itemized.size) {
+    for (const [n, e] of itemized) {
+      const floor = e.surfaces.includes("floor");
+      rooms.push(
+        fnd(
+          {
+            name: n,
+            growth: e.surfaces.length > 0,
+            lengthFt: null,
+            widthFt: null,
+            heightFt: null,
+            areaSF: null,
+            // "Flooring by A/C": growth at one spot — part of the floor, boundary not given
+            coverage: floor ? { whole: false, pct: null } : null,
+            vague: null,
+            quotes: { dims: null, area: null, coverage: e.floorQuote },
+            surfaces: e.surfaces,
+            wallLabel: e.wallLabel,
+            airElevated: e.air,
+          },
+          e.stmt,
+        ),
+      );
+    }
+  } else if (names.length) {
     for (const n of names) {
       const sec = S.filter((s) => s.room === n);
       rooms.push(readRoom(n, sec, sec[0]));
@@ -180,7 +281,8 @@ export function rulesAnalyze(pages: string[]): ReportFindings {
   const areaQ = r0 ? roomQuote(r0, AREA_LABELED) ?? roomQuote(r0, AREA_OF_GROWTH) ?? roomQuote(r0, SF) : null;
   const affectedAreaSF = r0 && r0.value.areaSF != null && areaQ ? fnd(r0.value.areaSF, areaQ) : null;
   const covQ = r0?.value.coverage ? (S.find((s) => (names.length ? s.room === r0.value.name : true) && coverageOf(s, false)) ?? roomQuote(r0, /./)) : null;
-  const floorCoverage = r0?.value.coverage && covQ ? fnd(r0.value.coverage, covQ) : null;
+  const covQuote = r0?.value.quotes.coverage ? (S.find((s) => s.text.includes(r0.value.quotes.coverage!)) ?? null) : null;
+  const floorCoverage = r0?.value.coverage && (covQuote || covQ) ? fnd(r0.value.coverage, covQuote ? { ...covQuote, text: r0.value.quotes.coverage! } : covQ!) : null;
   if (dims && r0) dims.page = S.find((s) => s.text === dims.quote)?.page ?? dims.page;
 
   const ftS = first(S, /\b(wood|hardwood|engineered|laminate|parquet|oak|carpet|vinyl|lvp|tile)\b[^.]{0,20}\bfloor(ing)?\b/i);
@@ -189,7 +291,19 @@ export function rulesAnalyze(pages: string[]): ReportFindings {
 
   // --- containment & removal ---
   const contL = labeled(S, "containment|containment level|containment type");
-  const contS = contL?.s ?? first(S, /\bcontainment\b/i);
+  const contListS = firstSentence(S, /^-?\s*contain\b[^.]*\([a-h]\)/i) ?? firstSentence(S, /\bcontain\b[^.]*\b(localized|entire)\b/i);
+  const contS = contListS ?? contL?.s ?? first(S, /\bcontainment\b/i, /\b(in the containment|remediator shall)\b/i) ?? first(S, /\bcontainment\b/i);
+  const areas: { room: string; extent: "localized" | "entire" | null }[] = [];
+  if (contListS) {
+    const segs = contListS.text.split(/\([a-h]\)/i).slice(1);
+    for (const seg of segs.length ? segs : [contListS.text]) {
+      const room = findRoomName(seg);
+      if (!room || areas.some((a) => a.room === room)) continue;
+      areas.push({ room, extent: /\b(localized|portion|part of|area of|area at)\b/i.test(seg) ? "localized" : /\b(entire|whole|all of)\b/i.test(seg) || /^\s*the\s+[\w/ ]*\b(closet|room)\b/i.test(seg) ? "entire" : null });
+    }
+  }
+  const separateContainments = areas.length > 1 && (/\([b-h]\)/i.test(contListS?.text ?? "") || S.some((s) => /\beach containment\b/i.test(s.text)));
+  const negS = firstSentence(S, /\bnegative (air|pressure)\b/i);
   const containment = contS
     ? fnd(
         {
@@ -200,17 +314,20 @@ export function rulesAnalyze(pages: string[]): ReportFindings {
               : /\b(limited|mini|local|source)\b/i.test(contS.text)
                 ? ("limited" as const)
                 : ("unspecified" as const),
-          negativeAir: /negative (air|pressure)/i.test(contS.text),
+          negativeAir: /negative (air|pressure)/i.test(contS.text) || !!negS,
+          ...(areas.length ? { areas, separate: separateContainments, material: contS.text.match(/(\d+\s*-?\s*mil[^.]*?)(?:\.|$)/i)?.[1]?.trim() ?? null } : {}),
         },
         contS,
       )
     : null;
   const remL = labeled(S, "removal|removal limits|scope of removal|material removal|remediation scope");
   const remS = remL?.s ?? first(S, /\bremove\b[^.]*\b(beyond|extend|all|entire|up to)\b/i, /\bsubfloor\b/i);
-  const removalExtent = remS ? fnd(remL?.value ?? remS.text, remS) : null;
+  const remSent = remS ? sentence(remS, /\bremove\b/i) : null;
+  const removalExtent = remSent ? fnd(remL?.value ?? remSent.text, remSent) : null;
 
   // --- subfloor ---
-  const subS = labeled(S, "subfloor|sub-floor")?.s ?? first(S, /\b(subfloor|sub-floor)\b/i);
+  const subS0 = labeled(S, "subfloor|sub-floor")?.s ?? first(S, /\b(subfloor\w*|sub-floor\w*)\b/i);
+  const subS = subS0 ? sentence(subS0, /\b(subfloor\w*|sub-floor\w*)\b/i) : null;
   let subfloor: ReportFindings["subfloor"] = null;
   if (subS) {
     const t = subS.text.replace(/\b(do not|don't|not to be|no need to|without)\s+(be\s+)?(remov|replac)\w*/gi, "");
@@ -223,7 +340,7 @@ export function rulesAnalyze(pages: string[]): ReportFindings {
   const wg = growthFinding(wallS);
   let wallsGrowth: ReportFindings["wallsGrowth"] = null;
   if (wg && wallS) {
-    const h = wallS.text.match(/\b(?:bottom|lower|first|up to|to a height of|to)\s*(\d+(?:\.\d+)?)\s*(in(?:ches)?|"|”|ft|feet|')/i) ?? wallS.text.match(/(\d+(?:\.\d+)?)\s*(in(?:ches)?|"|”|ft|feet|')\s*(?:above the floor|from the floor|high)/i);
+    const h = wallS.text.match(/\b(?:bottom|lower|first|up to|to a height of|to)\s*(\d+(?:\.\d+)?)\s*(in(?:ches)?|"|”|ft|feet|')/i) ?? wallS.text.match(/(\d+(?:\.\d+)?)\s*(in(?:ches)?|"|”|ft|feet|')\s*(?:above the floor|from the floor|from the ground|high)/i);
     const heightIn = h ? (/(ft|feet|')/i.test(h[2]) ? num(h[1]) * 12 : num(h[1])) : null;
     wallsGrowth = { ...wg, value: { ...wg.value, heightIn: wg.value.growth ? heightIn : null } };
   }
@@ -243,21 +360,37 @@ export function rulesAnalyze(pages: string[]): ReportFindings {
   const prvS = labeled(S, "post-remediation verification|post remediation verification|post-remediation assessment|clearance|clearance testing|clearance criteria|prv")?.s ?? first(S, /\b(post[- ]remediation (verification|assessment|testing)|clearance)\b/i);
   let clearanceCriteria: ReportFindings["clearanceCriteria"] = null;
   let clearanceBy: ReportFindings["clearanceBy"] = null;
-  if (prvS && OPEN.test(prvS.text)) {
+  const ci = S.findIndex((s) => /^criteria for clearance/i.test(s.text));
+  const critS = ci >= 0 ? S[ci] : null;
+  if (critS) {
+    const items = critS.text.replace(/^criteria for clearance( testing)?:?\s*/i, "").split(/\s*(?=\b\d\)\s)/).map((x) => x.trim()).filter(Boolean);
+    for (let j = ci + 1; j < S.length && /^\d+[.)]\s/.test(S[j].text); j++) items.push(S[j].text);
+    if (items.length) clearanceCriteria = fnd(items.join(" "), { ...critS, text: `${critS.text.replace(/:?\s*$/, ":")} ${items.join(" ")}` });
+  }
+  const bySole = firstSentence(S, /\bonly a\s+((?:NYS|New York State)\s+mold assessor)\b/i);
+  if (bySole) clearanceBy = fnd(bySole.text.match(/\bonly a\s+((?:NYS|New York State)\s+mold assessor)\b/i)![1].replace(/^nys/i, "NYS").replace(/mold assessor/i, "Mold Assessor"), bySole);
+  if (critS || bySole) {
+    /* criteria / assessor stated explicitly */
+  } else if (prvS && OPEN.test(prvS.text)) {
     unanswered.push({ key: "clearanceCriteria", label: "Clearance criteria", quote: prvS.text });
     unanswered.push({ key: "clearanceBy", label: "Who does the post-remediation check", quote: prvS.text });
   } else if (prvS) {
     if (/\b(visual|air sampl|spore|moisture|dry standard|tape|swab|surface sampl|comparable|outdoor|pass)\w*/i.test(prvS.text)) clearanceCriteria = fnd(prvS.text.replace(/^[^:]+:\s*/, ""), prvS);
-    const by = prvS.text.match(/\bby\s+(?:an?\s+|the\s+)?([^;:.]*?(?:assessor|consultant|inspector|hygienist|company|firm|third[- ]party|laboratory|lab)\b)/i) ?? prvS.text.match(/\b((?:independent|third[- ]party)[^;:.,]*)/i);
+    const by = prvS.text.match(/\bby\s+(?:an?\s+|the\s+)?([^;:.]*?(?:assessor|consultant|inspector|hygienist|company|firm|third[- ]party|laboratory|lab|licensee)\b)/i) ?? prvS.text.match(/\b((?:independent|third[- ]party)[^;:.,]*)/i);
     if (by) clearanceBy = fnd(by[1].trim(), prvS);
   }
 
   // --- moisture source ---
   const srcL = labeled(S, "moisture source|source of moisture|water source|cause|cause of growth|cause of moisture|cause of loss|source");
   const srcS = srcL?.s ?? first(S, /\b(leak|condensation|humidity|intrusion|plumbing|roof|flood)\b[^.]*\b(source|caused|cause)\b|\bsource\b[^.]*\b(leak|condensation|humidity|intrusion)\b/i);
-  const moistureSource = srcS ? fnd((srcL?.value ?? srcS.text).replace(/\.\s.*$/, "."), srcS) : null;
+  const srcSent = srcS ? sentence(srcS, /\b(source|leak|intrusion|condensation)\b/i) : null;
+  // "The source of water intrusion must be addressed …" names no source — it is not a finding of what the source is.
+  const namesSource = (t: string) => /\b(leak|valve|pipe|plumbing|roof|condensation|humidity|a\/c|hvac|window|appliance|washer|toilet|shower|tub|flood|groundwater|drain|radiator|sprinkler|ice|gutter)\b/i.test(t.replace(/^.*?:\s*/, ""));
+  const moistureSource = srcSent && (srcL || namesSource(srcSent.text)) ? fnd((srcL?.value ?? srcSent.text).replace(/\.\s.*$/, "."), srcSent) : null;
+  if (!moistureSource && srcSent) unanswered.push({ key: "moistureSource", label: "Moisture source", quote: srcSent.text });
   const FIX_WORDS = /\b(repaired|fixed|corrected|resolved|stopped|active|ongoing|still leaking|unknown|undetermined|not (yet )?(been )?(identified|located|determined))\b/i;
-  const fixS = srcS && FIX_WORDS.test(srcS.text) ? srcS : first(S, /\b(leak|source|moisture)\b[^.]*\b(repaired|fixed|corrected|resolved|stopped|active|ongoing|still leaking)\b/i);
+  const PROCEDURE = /\b(to determine|determine (if|whether|any)|whether there|if there were any|are taken|were taken)\b/i;
+  const fixS = srcS && FIX_WORDS.test(srcS.text) && !PROCEDURE.test(srcS.text) ? srcS : first(S, /\b(leak|source|moisture)\b[^.]*\b(repaired|fixed|corrected|resolved|stopped|active|ongoing|still leaking)\b/i, PROCEDURE);
   let sourceFixed: ReportFindings["sourceFixed"] = null;
   if (fixS) {
     if (/\b(not (yet )?(been )?(repaired|fixed|corrected|resolved|stopped))\b|\b(active|ongoing|still leaking|remains? (active|wet))\b/i.test(fixS.text)) sourceFixed = fnd(false, fixS);
@@ -285,11 +418,109 @@ export function rulesAnalyze(pages: string[]): ReportFindings {
 
   // --- mold type & condition ---
   const mtL = labeled(S, "mold type|mold types|species|genus|genera|organisms?|identified|mold identified");
-  const mtS = mtL?.s ?? first(S, /\b(cladosporium|penicillium|aspergillus|stachybotrys|chaetomium|alternaria|trichoderma|ulocladium)\b/i);
+  const mtS = mtL?.s ?? first(S, /\b(cladosporium|penicillium|aspergillus|stachybotrys|chaetomium|alternaria|trichoderma|ulocladium)\b/i, /\bno\s+(chaetomium|stachybotrys|aspergillus|penicillium|cladosporium)\b|criteria|clearance/i);
   const moldType = mtS ? fnd(mtL?.value ?? mtS.text, mtS) : null;
-  const condS = first(S, /\bcondition\s*[123]\b/i) ?? first(S, /\bcategory\s*[123]\b/i);
+  const NOT_CURRENT = /\b(normal fungal ecology|return|back to|reduced to|levels|goal|purpose)\b/i;
+  const condS = first(S, /\bcondition\s*[123]\b/i, NOT_CURRENT) ?? first(S, /\bcategory\s*[123]\b/i, NOT_CURRENT);
   const cm = condS?.text.match(/\b(condition|category)\s*([123])\b(\s*\([^)]*\))?/i);
   const condition = condS && cm ? fnd(`${cm[1][0].toUpperCase()}${cm[1].slice(1).toLowerCase()} ${cm[2]}${cm[3] ?? ""}`, condS) : null;
+
+  // --- protocol items (plans written as instructions, not room sections) ---
+  const conflicts: ReportConflict[] = [];
+  const scrS = firstSentence(S, /\bair scrubbers?\b[^.]*\b(\d+)\s*hours?\b/i) ?? firstSentence(S, /\bair scrubbers?\b[^.]*\beach containment\b/i);
+  let airScrubber: ReportFindings["airScrubber"] = undefined;
+  if (scrS) {
+    const t = scrS.text;
+    const per = t.match(/\b(?:install|use|place|set)\s+(\d+|one|two)\s+HEPA/i);
+    const after = t.split(/each containment area\s*[–—:-]?\s*/i)[1] ?? "";
+    airScrubber = fnd(
+      { perContainment: per ? toNum(per[1]) : 1, hours: Number(t.match(/(\d+)\s*hours?/i)?.[1] ?? NaN) || null, ach: Number(t.match(/(\d+)\s*ACH/i)?.[1] ?? NaN) || null, rooms: findRoomNames(after) },
+      scrS,
+    );
+    const contRooms = areas.map((a) => a.room);
+    if (contRooms.length && airScrubber.value.rooms.length && (contRooms.length !== airScrubber.value.rooms.length || !contRooms.every((r) => airScrubber!.value.rooms.includes(r))))
+      conflicts.push({ text: `Containments listed (${contRooms.join(", ")}) and air-scrubber areas (${airScrubber.value.rooms.join(", ")}) don't match`, quotes: [{ quote: contS!.text, page: contS!.page }, { quote: scrS.text, page: scrS.page }] });
+  }
+  const wallRemovals: Finding<WallRemoval>[] = [];
+  for (const st of S) {
+    for (const part of st.text.split(/(?<=[.!?])\s+(?=[A-Z(])|\s(?=\([a-h]\)\s)/)) {
+      const a = part.match(/\b(?:all\s+)?drywall\s+(\d+|one|two|three|four)\s*(feet|foot|ft|inches|inch|in)\b\s*(?:from|above)\s+the\s+(?:ground|floor)\s+in\s+the\s+(.+?)\s+along\s+the\s+affected\s+wall/i);
+      if (a) {
+        const rs = findRoomNames(a[3]);
+        wallRemovals.push(fnd({ rooms: rs, wallLabel: "affected wall", heightIn: toNum(a[1]) * (/^f/i.test(a[2]) ? 12 : 1), statedSF: null, approximate: false, entireWall: false }, { ...st, text: part.trim() }));
+      }
+      const b = part.match(/\bremove\s+(approximately|approx\.?|about|roughly|around)?\s*(\d+(?:\.\d+)?)\s*(?:square feet|sq\.?\s*ft|sf)\s+of\s+drywall\s+(?:at|on|from)\s+the\s+(rear|back|front|side)?\s*([\w/]+)\s+wall/i);
+      if (b) {
+        const room = findRoomName(`${b[4]} wall`) ?? findRoomName(part);
+        wallRemovals.push(fnd({ rooms: room ? [room] : [], wallLabel: `${b[3] ? `${b[3].toLowerCase()} ` : ""}wall`, heightIn: null, statedSF: Number(b[2]), approximate: !!b[1], entireWall: /\bentire\b/i.test(part) }, { ...st, text: part.trim() }));
+      }
+    }
+  }
+  const beyS = firstSentence(S, /\b(?:cutouts?|cuts?|removal)\s+(\d+|twelve|six)\s*inch(?:es)?\s+beyond\b/i);
+  const cutBeyondIn = beyS ? fnd(toNum(beyS.text.match(/\b(\d+|twelve|six)\s*inch/i)![1]), beyS) : undefined;
+  const pastS = firstSentence(S, /\bminimum of\s+(\d+|one|two|three)\s*(feet|foot|ft)\s+past\b/i);
+  if (cutBeyondIn && pastS) {
+    const pastIn = toNum(pastS.text.match(/\bminimum of\s+(\d+|one|two|three)\s*(feet|foot|ft)/i)![1]) * 12;
+    if (pastIn !== cutBeyondIn.value) {
+      const base = wallRemovals.find((w) => w.value.heightIn)?.value.heightIn ?? null;
+      conflicts.push({
+        text: `How far past affected drywall to cut: ${cutBeyondIn.value} in (p.${cutBeyondIn.page}) vs at least ${pastIn / 12} ft (p.${pastS.page})${base ? `. If growth reaches the ${base}" cut line: ${base} + ${cutBeyondIn.value} = ${base + cutBeyondIn.value}" by the first rule, ${base} + ${pastIn} = ${base + pastIn}" by the second` : ""} — confirm with the assessor`,
+        quotes: [
+          { quote: cutBeyondIn.quote, page: cutBeyondIn.page },
+          { quote: pastS.text, page: pastS.page },
+        ],
+      });
+    }
+  }
+  const ftS2 = firstSentence(S, /\beither\s+(?:the\s+)?remov\w*\s+of\s+(?:the\s+)?affected\s+[\w ]*floor\w*\s+or\b[^.]*\bsand/i);
+  const floorTreatment = ftS2 ? fnd({ rooms: findRoomNames(ftS2.text.split(/\bproceed\b|\beither\b/i)[0]), options: ["remove", "sand"] as ("remove" | "sand")[] }, ftS2) : undefined;
+  const frcS = firstSentence(S, /\b(sand|wire[- ]?brush)\w*\b[^.]*\b(framing|studs|structural components)\b/i);
+  const framingCleaning = frcS ? fnd(frcS.text, frcS) : undefined;
+  const encS = firstSentence(S, /\bencapsulat\w*\b[^.]*\b(framing|wood|structural)\b/i);
+  const encapsulant = encS ? fnd(encS.text, encS) : undefined;
+  const hvS = firstSentence(S, /\bHEPA[- ]vacuum\s+all\s+surfaces\b/i);
+  const sanS = firstSentence(S, /\b(deep sanitization|small particle cleaning)\b[^.]*\ball surfaces\b/i);
+  const prodS = firstSentence(S, /\bantimicrobial\b[^.]*\bsuch as\b/i);
+  const product = prodS?.text.match(/\bsuch as\s+([A-Z][\w-]*(?:\s+[A-Z0-9][\w-]*){0,3})/)?.[1] ?? null;
+  const surfaceCleaning = hvS || sanS ? fnd({ hepaVacuum: !!hvS, sanitize: !!sanS, product }, (sanS ?? hvS)!) : undefined;
+  const specialItems: NonNullable<ReportFindings["specialItems"]> = [];
+  const caulkS = firstSentence(S, /\bcaulk\w*\b[^.]*\b(silicone|seal|replace)\b/i);
+  if (caulkS) {
+    const room = findRoomName(caulkS.text);
+    if (room) specialItems.push(fnd({ room, kind: "shower_caulking" as const, hvacIfInaccessible: false }, caulkS));
+  }
+  const ventS = firstSentence(S, /\bclean\b[^.]*\bvents?\b/i);
+  if (ventS) {
+    const room = findRoomName(ventS.text);
+    if (room) specialItems.push(fnd({ room, kind: "vent" as const, hvacIfInaccessible: /\bHVAC\b/i.test(ventS.text) }, ventS));
+  }
+  const poS = first(S, /\bpack[- ]?out\b|\bpack out\b/i); // the whole item: pack-out and the porous-discard rule
+  const packout = poS ? fnd(poS.text, poS) : undefined;
+  const baseboardRemovals: NonNullable<ReportFindings["baseboardRemovals"]> = [];
+  for (const st of S) {
+    const x = sentence(st, /\b(base moldings?|baseboards?)\b[^.]*\bremoved\b|\bremove\b[^.]*\b(base moldings?|baseboards?)\b/i);
+    if (!/\b(base moldings?|baseboards?)\b/i.test(x.text) || !/\bremov/i.test(x.text)) continue;
+    const room = findRoomName(x.text);
+    if (room && !baseboardRemovals.some((b) => b.value.room === room)) baseboardRemovals.push(fnd({ room }, x));
+  }
+  const clearanceConditions: Finding<string>[] = [];
+  for (const re of [/\bshut down\b[^.]*\b24 hours?\b/i, /\brebuild\b[^.]*\bafter clearance\b/i, /\bpost remediation visual inspection\b[^.]*\bair sample\b/i]) {
+    const x = firstSentence(S, re);
+    if (x) clearanceConditions.push(fnd(x.text, x));
+  }
+  const mbaS = firstSentence(S, /\bsource of (?:the\s+)?(?:water intrusion|water|moisture|leak)\b[^.]*\bmust be (addressed|corrected|repaired|fixed|resolved)\b/i);
+  const sourceMustBeAddressed = mbaS && !sourceFixed?.value ? fnd(mbaS.text, mbaS) : undefined;
+  const hzS = firstSentence(S, /^(?=.*\b(asbestos|lead-based paint)\b)(?=.*\b(responsible|regulations|followed|follow)\b)/i);
+  const hazardNote = hzS ? fnd(hzS.text, hzS) : undefined;
+  const otherConcerns: Finding<string>[] = [];
+  for (const st of S) {
+    const x = sentence(st, /\bsuspected mold\b/i);
+    if (/\bsuspected mold\b/i.test(x.text) && !otherConcerns.some((o) => o.quote === x.text)) otherConcerns.push(fnd(x.text, x));
+  }
+  const labMention = firstSentence(S, /\blab(oratory)?\s+(reports?|results?|analysis)\b/i);
+  const labTables = S.some((s) => /\b(spores?\s*\/\s*m3|raw count|counts?\s*\/\s*m3|cfu)\b/i.test(s.text));
+  const labTablesMissing = labMention && !labTables && !moldType ? fnd("The report refers to lab results, but no lab tables are in its text", labMention) : undefined;
+  if (labTablesMissing) unanswered.push({ key: "moldType", label: "Mold type", quote: labTablesMissing.quote });
 
   const out: ReportFindings = {
     analyzer: "rules",
@@ -322,6 +553,22 @@ export function rulesAnalyze(pages: string[]): ReportFindings {
     moldType,
     condition,
     unanswered,
+    airScrubber,
+    wallRemovals,
+    cutBeyondIn,
+    floorTreatment,
+    framingCleaning,
+    encapsulant,
+    surfaceCleaning,
+    specialItems,
+    packout,
+    baseboardRemovals,
+    clearanceConditions,
+    sourceMustBeAddressed,
+    hazardNote,
+    otherConcerns,
+    conflicts,
+    labTablesMissing,
   };
   const label = new Map(FINDING_LABELS);
   for (const k of SCOPE_FINDINGS)

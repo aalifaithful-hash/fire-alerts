@@ -40,6 +40,8 @@ export const ScanSource = z.object({
   status: z.enum(["repaired", "stopped", "active", "unknown"]).default("unknown"),
   hoursSinceLoss: n.default(null),
   waterSource: z.enum(WATER_SOURCES).nullable().default(null),
+  /** The report says the source must still be addressed (quote) — HOLD until the PM confirms it is fixed. */
+  hold: z.string().nullable().default(null),
 });
 
 export const ScanLoss = z.object({
@@ -57,11 +59,13 @@ export const ScanMaterials = z.object({
       type: z.string().nullable().default(null), // carpet+pad, hardwood, LVP, tile…
       affected: z.boolean().default(false),
       affectedPct: z.number().min(0).max(100).nullable().default(null),
-      action: z.enum(["dry_in_place", "remove", "replace"]).nullable().default(null),
+      action: z.enum(["dry_in_place", "remove", "replace", "sand"]).nullable().default(null),
+      /** Mold: the assessor allows either removing the flooring or sanding the discoloration — the PM picks. */
+      choice: z.enum(["remove_or_sand"]).nullable().default(null),
       continuousRun: z.string().nullable().default(null), // rooms sharing the same run label have no natural break between them
       breakNote: z.string().nullable().default(null),
     })
-    .default({ type: null, affected: false, affectedPct: null, action: null, continuousRun: null, breakNote: null }),
+    .default({ type: null, affected: false, affectedPct: null, action: null, choice: null, continuousRun: null, breakNote: null }),
   baseboard: z
     .object({ affected: z.boolean().default(false), walls: z.array(z.string()).default([]), action: z.enum(["detach_reset", "remove"]).nullable().default(null) })
     .default({ affected: false, walls: [], action: null }),
@@ -71,8 +75,13 @@ export const ScanMaterials = z.object({
       affectedWalls: z.array(z.string()).default([]),
       wetHeightIn: n.default(null),
       floodCut: z.union([z.literal("auto"), z.literal("none"), z.number().positive()]).default("auto"),
+      /** A drywall removal area the report states outright (e.g. "approximately 60 square feet … entire rear wall"). */
+      statedRemovalSF: z.number().positive().nullable().default(null),
+      statedApproximate: z.boolean().default(false),
+      /** Where the removal height came from ("report: remove drywall 2 ft from the ground"). */
+      cutSource: z.string().nullable().default(null),
     })
-    .default({ material: null, affectedWalls: [], wetHeightIn: null, floodCut: "auto" }),
+    .default({ material: null, affectedWalls: [], wetHeightIn: null, floodCut: "auto", statedRemovalSF: null, statedApproximate: false, cutSource: null }),
   ceiling: z
     .object({
       affected: z.boolean().default(false),
@@ -81,6 +90,11 @@ export const ScanMaterials = z.object({
     })
     .default({ affected: false, affectedPct: null, action: null }),
   insulation: z.boolean().default(false),
+  /** Mold: encapsulating paint on the framing exposed behind removed drywall. */
+  encapsulate: z.boolean().default(false),
+  /** Mold items that aren't a surface removal: shower caulking re-seal, vent cleaning. */
+  moldSpecial: z.array(z.enum(["shower_caulking", "vent"])).default([]),
+  ventHvacIfInaccessible: z.boolean().default(false),
   /** Mold: subfloor under removed flooring — cleaned in place or removed (from the assessor's report). */
   subfloor: z.enum(["clean", "remove"]).nullable().default(null),
   /** Mold: growth on framing (floor joists or wall studs) and whether it is cleaned or removed. */
@@ -133,6 +147,8 @@ export const ScopeLine = z.object({
   evidence: z.array(z.string()).default([]),
   status: z.enum(LINE_STATUSES),
   flags: z.array(z.string()).default([]),
+  /** Where the quantity comes from: "report" (quoted), "measured", "rule", "pm" — null = no traceable source. */
+  source: z.enum(["report", "measured", "rule", "pm"]).nullable().default(null),
 });
 export type ScopeLine = z.infer<typeof ScopeLine>;
 
@@ -154,6 +170,19 @@ export const RoomScanData = z.object({
   reportValues: z.record(z.string(), z.string()).default({}),
   /** Connected rooms in one containment: the primary room carries the containment lines. */
   containmentGroup: z.object({ primary: z.boolean(), rooms: z.array(z.string()) }).nullable().default(null),
+  /** This room's own containment per the report (localized area / entire room) and the scrubber spec, or none listed. */
+  containmentArea: z
+    .object({
+      extent: z.enum(["localized", "entire"]).nullable(),
+      none: z.boolean().default(false),
+      scrubber: z.object({ perContainment: z.number(), hours: z.number().nullable(), ach: z.number().nullable() }).nullable().default(null),
+    })
+    .nullable()
+    .default(null),
+  /** Report statements about this room that aren't scope lines (elevated air counts, suspected areas, hazards). */
+  reportNotes: z.array(z.string()).default([]),
+  /** Quantities the PM entered on a line (line id → value) — shown as "entered by PM". */
+  quantityOverrides: z.record(z.string(), z.number().nonnegative()).default({}),
   /** Per-line notes (e.g. "changed by the mold report: was 48 SF") until the PM accepts or rejects the line. */
   lineNotes: z.record(z.string(), z.string()).default({}),
   /** What the last applied report changed in this room. */
