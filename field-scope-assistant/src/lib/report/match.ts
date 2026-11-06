@@ -25,6 +25,8 @@ export interface ReportChange {
   conflict: boolean;
   /** The value an earlier report set, when this report changes it. */
   previousReport: string | null;
+  /** Needs a PM choice the report doesn't make (e.g. "remove" with no how) — offered, OFF by default, never auto-applied. */
+  optional?: boolean;
 }
 
 export interface VisitRoom {
@@ -100,6 +102,7 @@ interface Draft {
   proposed: string;
   src: Finding<unknown>;
   manual: boolean; // the current value is something the PM has (not empty)
+  optional?: boolean;
 }
 
 /** Changes and mismatch warnings for every planned room. */
@@ -118,9 +121,9 @@ export function proposeVisit(f: ReportFindings, rooms: VisitRoom[], yearBuilt: n
     const r = p.report?.value ?? emptyRoomFinding(p.name);
     const where = p.target?.label ?? p.name;
     const drafts: Draft[] = [];
-    const d = (key: string, label: string, current: string | null, proposed: string, src: Finding<unknown> | null) => {
+    const d = (key: string, label: string, current: string | null, proposed: string, src: Finding<unknown> | null, optional = false) => {
       if (!src || current === proposed) return;
-      drafts.push({ key, label, current, proposed, src, manual: current != null });
+      drafts.push({ key, label, current, proposed, src, manual: current != null, optional });
     };
     const anchor = (q: string | null) => (q ? { value: null, quote: q, page: p.report?.page ?? 1 } : p.report);
 
@@ -242,14 +245,17 @@ export function proposeVisit(f: ReportFindings, rooms: VisitRoom[], yearBuilt: n
       const k = m.value.kind;
       const it = s?.materials.casework.find((x) => x.kind === k);
       const cur = it ? (it.affected ? (it.action ? cwText(it.action) : null) : "Not affected") : null;
-      d(`casework.${k}`, CASEWORK_LABELS[k], cur, m.value.action ? cwText(m.value.action) : "Affected — action not stated in the report", m);
+      if (m.value.removeOnly) {
+        if (it?.affected && it.action) continue; // the PM already chose how
+        d(`casework.${k}`, CASEWORK_LABELS[k], cur, `Affected — the report says remove, not how: ${REMOVE_CHOICES}${removeHintText(m.value.removeHint)} (not picked)`, m, true);
+      } else d(`casework.${k}`, CASEWORK_LABELS[k], cur, m.value.action ? cwText(m.value.action) : "Affected — action not stated in the report", m);
     }
     if (f.moistureSource && p.primary && !s?.source.fixture) d("source.fixture", "Moisture source", null, f.moistureSource.value, f.moistureSource);
 
     for (const x of drafts) {
       const previousReport = x.current != null && prev[x.key] === x.current ? x.current : null;
       const conflict = x.manual && !previousReport && x.key !== "floor.affected" && x.key !== "flooring.type";
-      changes.push({ id: `${p.name}::${x.key}`, room: p.name, key: x.key, label: x.label, current: x.current, proposed: x.proposed, quote: x.src.quote, page: x.src.page, conflict, previousReport });
+      changes.push({ id: `${p.name}::${x.key}`, room: p.name, key: x.key, label: x.label, current: x.current, proposed: x.proposed, quote: x.src.quote, page: x.src.page, conflict, previousReport, ...(x.optional ? { optional: true } : {}) });
       if (previousReport) replaced.push(`${where}: ${x.label.toLowerCase()} — the earlier report said "${previousReport}", this one says "${x.proposed}".`);
     }
   }
@@ -399,6 +405,9 @@ export function applyVisit(f: ReportFindings, plans: RoomPlan[], changes: Report
 }
 
 const cwText = (a: keyof typeof CASEWORK_ACTION_LABELS) => `Affected — ${CASEWORK_ACTION_LABELS[a].toLowerCase()}`;
+const REMOVE_CHOICES = "detach & reset, remove & replace, or remove & dispose?";
+export const removeHintText = (h: "access" | "damaged" | null | undefined) =>
+  h === "access" ? " — “remove to access” usually means detach & reset" : h === "damaged" ? " — damaged material usually means remove & replace or remove & dispose" : "";
 
 /** The report's cabinet / countertop mentions for one planned room (no room named → the primary room). */
 function caseworkFor(f: ReportFindings, p: RoomPlan) {
@@ -499,7 +508,8 @@ export function stillMissing(f: ReportFindings, ctx: { yearBuiltKnown: boolean; 
     const n = m.value.room ? `${m.value.room}: ` : "";
     const k: CaseworkKind = m.value.kind;
     const lbl = CASEWORK_LABELS[k].toLowerCase();
-    if (!m.value.action) out.push(`${n}${lbl} — clean, detach & reset, or remove? The report names it (p.${m.page}) but doesn't say`);
+    if (m.value.removeOnly) out.push(`${n}${lbl} — the report says “${m.quote}” (p.${m.page}): ${REMOVE_CHOICES}${removeHintText(m.value.removeHint)}. Not picked — choose it in the scan`);
+    else if (!m.value.action) out.push(`${n}${lbl} — clean, detach & reset, or remove? The report names it (p.${m.page}) but doesn't say`);
     if (k === "countertop" || k === "vanity_top" || k === "backsplash") out.push(`${n}${lbl} material and length (LF) — not in the report; measure on site and pick the material`);
     else if ((CABINET_BOXES as readonly string[]).includes(k) || k === "toe_kick") out.push(`${n}${lbl} length (LF) — not in the report; measure on site`);
     else if (k === "doors_drawers") out.push(`${n}how many doors / drawer fronts — not in the report`);

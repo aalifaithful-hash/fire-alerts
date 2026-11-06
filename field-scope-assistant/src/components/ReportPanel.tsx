@@ -5,7 +5,7 @@ import { useStatus } from "./useStatus";
 import type { ScopeLine } from "@/lib/scan";
 
 type Row = { key: string; label: string; value: string | null; quote: string | null; page: number | null; stated: "found" | "open" | "missing" };
-type Change = { id: string; room: string; key: string; label: string; current: string | null; proposed: string; quote: string; page: number; conflict: boolean; previousReport: string | null };
+type Change = { id: string; room: string; key: string; label: string; current: string | null; proposed: string; quote: string; page: number; conflict: boolean; optional?: boolean; previousReport: string | null };
 type View = {
   reports: { id: string; filename: string; status: string; warning: string | null; contentType: string; confirmed: boolean }[];
   ai: { enabled: false; message: string };
@@ -45,7 +45,7 @@ export default function ReportPanel({ projectId, visitId, onApplied }: { project
     try {
       const d = await api<View>(base);
       setV(d);
-      setPicked(Object.fromEntries((d.active?.changes ?? []).map((c) => [c.id, !c.conflict])));
+      setPicked(Object.fromEntries((d.active?.changes ?? []).map((c) => [c.id, !c.conflict && !c.optional])));
     } catch (e) {
       setErr((e as Error).message);
     }
@@ -79,7 +79,7 @@ export default function ReportPanel({ projectId, visitId, onApplied }: { project
       const d = await api<View>(base);
       const a0 = d.active;
       if (a0 && a0.id === doc.id && !a0.applied && a0.mismatches.length === 0 && a0.changes.every((c) => !c.conflict)) {
-        await api(`${base}/apply`, { body: { documentId: a0.id, keys: a0.changes.map((c) => c.id) } });
+        await api(`${base}/apply`, { body: { documentId: a0.id, keys: a0.changes.filter((c) => !c.optional).map((c) => c.id) } });
         onApplied();
       }
     });
@@ -207,7 +207,7 @@ export default function ReportPanel({ projectId, visitId, onApplied }: { project
                 <label key={c.id} className="row small" style={{ alignItems: "flex-start" }}>
                   <input type="checkbox" checked={!!picked[c.id]} onChange={(e) => setPicked({ ...picked, [c.id]: e.target.checked })} aria-label={`Apply ${c.label}${c.room ? ` (${c.room})` : ""}`} />
                   <span className="grow">
-                    {c.conflict ? "⚑ your entry · " : c.previousReport ? "↻ earlier report · " : ""}
+                    {c.conflict ? "⚑ your entry · " : c.optional ? "? your choice · " : c.previousReport ? "↻ earlier report · " : ""}
                     <strong>
                       {multi && c.room ? `${c.room} — ` : ""}
                       {c.label}:

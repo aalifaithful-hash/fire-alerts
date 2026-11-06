@@ -8,7 +8,7 @@ import { MAX_UPLOAD_BYTES, UserError } from "../service";
 import { blobStoredPath, projectKey, putFile } from "../storage";
 import { sameStreet } from "../fnol";
 import { aiReportStatus, analyzeReport } from "./analyzer";
-import { applyVisit, proposeVisit, stillMissing, type ReportChange, type VisitRoom } from "./match";
+import { applyVisit, proposeVisit, removeHintText, stillMissing, type ReportChange, type VisitRoom } from "./match";
 import { FINDING_LABELS, findingText, type Finding, type ReportFindings } from "./types";
 
 /**
@@ -139,7 +139,7 @@ function panelRows(f: ReportFindings): ReportPanelRow[] {
   // cabinets / countertops / vanity / backsplash the report names
   for (const m of f.caseworkMentions ?? []) {
     const v = m.value;
-    rows.push({ key: `casework:${v.room ?? ""}:${v.kind}`, label: `${v.room ? `${v.room} — ` : ""}${CASEWORK_LABELS[v.kind]}`, value: `${v.growth ? "Affected" : "Named"} — ${v.action ? CASEWORK_ACTION_LABELS[v.action].toLowerCase() : "action not stated"}`, quote: m.quote, page: m.page, stated: "found" });
+    rows.push({ key: `casework:${v.room ?? ""}:${v.kind}`, label: `${v.room ? `${v.room} — ` : ""}${CASEWORK_LABELS[v.kind]}`, value: `${v.growth ? "Affected" : "Named"} — ${v.action ? CASEWORK_ACTION_LABELS[v.action].toLowerCase() : v.removeOnly ? `says remove, not how: detach & reset, remove & replace, or remove & dispose? (not picked${removeHintText(v.removeHint)})` : "action not stated"}`, quote: m.quote, page: m.page, stated: v.removeOnly ? "open" : "found" });
   }
   for (const [i, u] of (f.caseworkUnspecified ?? []).entries())
     rows.push({ key: `casework:unspecified:${i}`, label: "Cabinets (which not stated)", value: "Not assumed — say which (upper / lower / vanity)", quote: u.quote, page: u.page, stated: "open" });
@@ -159,7 +159,7 @@ export async function reportView(projectId: string, visitId: string) {
   const rooms = await visitRooms(projectId, visitId);
   const { plans, changes, mismatches, replaced } = proposeVisit(f, rooms, yb.yearBuilt);
   const applied = plans.every((p) => !p.target || p.target.scan.reportDocumentId === active.id) && plans.some((p) => p.target);
-  const next = applyVisit(f, plans, changes, changes.filter((c) => !c.conflict).map((c) => c.id), active.id);
+  const next = applyVisit(f, plans, changes, changes.filter((c) => !c.conflict && !c.optional).map((c) => c.id), active.id);
   const pv = await previewVisit(
     projectId,
     visitId,

@@ -62,10 +62,10 @@ export function caseworkLines(items: CaseworkItem[], contents: "none" | "manipul
       const src = it.depthIn != null ? `${depth}" depth` : `${depth}" depth (company default — edit if different)`;
       if (it.lf == null) return { q: null, unit: "SF", calc: `length not measured — ${src}` };
       const sf = r1((it.lf * depth) / 12);
-      return { q: sf, unit: "SF", calc: `${it.lf} LF × ${src} (${r2(depth / 12)} ft) = ${sf} SF`, extra: `${it.lf} LF` };
+      return { q: sf, unit: "SF", calc: `${it.lf} LF × ${src} (${r2(depth / 12)} ft) = ${sf} SF`, extra: `${it.lf} LF / ${sf} SF` };
     }
     if (it.kind === "backsplash") {
-      if (it.lf == null || it.depthIn == null) return { q: null, unit: "SF", calc: `${it.lf == null ? "length" : ""}${it.lf == null && it.depthIn == null ? " and " : ""}${it.depthIn == null ? "height" : ""} not measured — no quantity` };
+      if (it.lf == null || it.depthIn == null) return { q: null, unit: "SF", calc: `${it.lf == null ? "length" : ""}${it.lf == null && it.depthIn == null ? " and " : ""}${it.depthIn == null ? "height" : ""} not measured — no quantity${it.depthIn == null ? ' (no default height: a 4" splash and full-height tile differ too much to guess)' : ""}` };
       const sf = r1((it.lf * it.depthIn) / 12);
       return { q: sf, unit: "SF", calc: `${it.lf} LF × ${it.depthIn}" high (${r2(it.depthIn / 12)} ft) = ${sf} SF` };
     }
@@ -90,26 +90,31 @@ export function caseworkLines(items: CaseworkItem[], contents: "none" | "manipul
     if (R.stoneTopWarning && STONE.test(it.material ?? "") && action === "detach_reset") flags.push("Stone top: detach & reset risks breakage — confirm, or plan remove & replace.");
     if (it.kind === "backsplash" && /tile/i.test(it.material ?? "") && action === "detach_reset") flags.push("Tile backsplash can't usually be reset — plan remove & replace.");
     const base = { ruleId: `casework.${it.kind}`, unit, calc };
+    // countertops / vanity tops: detach, reset, remove, dispose and inspect in LF (length handled);
+    // clean, refinish and the NEW top in SF (LF × depth) — both shown, never one unit only
+    const top = it.kind === "countertop" || it.kind === "vanity_top";
+    const lfCalc = it.lf != null ? `${it.lf} LF measured along the wall${q != null ? ` (top area: ${calc})` : ""}` : "length not measured — measure along the wall (LF)";
+    const add = (d: Draft) => c.add(top && !/\.(replace|refinish)$/.test(d.id) && d.scopeCategory !== "cleaning" ? { ...d, quantity: it.lf, unit: "LF", calc: lfCalc } : d);
     if (!action) {
       if (c.water || c.mold) {
-        c.add({ ...base, id: `${id}.inspect`, kind: "mitigation", scopeCategory: "cavity_access", activity: "Inspect", item: `behind/under the ${name} — remove the toe kick, open inspection cuts in the back/bottom`, quantity: q, justification: `${c.mold ? "Mold" : "Water"} in the room: cabinets are checked, not assumed clean.`, flags });
-        if (c.mold && isBox(it.kind)) c.add({ ...base, id: `${id}.mold`, kind: "mitigation", scopeCategory: "removal", activity: "Remove & dispose", item: `${name} with growth (if found)`, quantity: q, justification: "Porous cabinet boxes with growth are removed, not cleaned (S520) — accept only if growth is confirmed.", flags });
+        add({ ...base, id: `${id}.inspect`, kind: "mitigation", scopeCategory: "cavity_access", activity: "Inspect", item: `behind/under the ${name} — remove the toe kick, open inspection cuts in the back/bottom`, quantity: q, justification: `${c.mold ? "Mold" : "Water"} in the room: cabinets are checked, not assumed clean.`, flags });
+        if (c.mold && isBox(it.kind)) add({ ...base, id: `${id}.mold`, kind: "mitigation", scopeCategory: "removal", activity: "Remove & dispose", item: `${name} with growth (if found)`, quantity: q, justification: "Porous cabinet boxes with growth are removed, not cleaned (S520) — accept only if growth is confirmed.", flags });
       }
       c.question(`${c.room}: ${CASEWORK_LABELS[it.kind]} — clean, detach & reset, remove & replace, remove & dispose${isBox(it.kind) || it.kind === "doors_drawers" ? ", or sand & refinish" : ""}?`);
       return;
     }
     const verb = c.mold ? "Clean & treat (HEPA vacuum, damp-wipe, antimicrobial)" : c.water && (c.category === "2" || c.category === "3") ? "Clean & disinfect" : "Clean";
-    if (action === "clean") c.add({ ...base, id, kind: "mitigation", scopeCategory: "cleaning", activity: verb, item: name, quantity: q, justification: why, flags });
+    if (action === "clean") add({ ...base, id, kind: "mitigation", scopeCategory: "cleaning", activity: verb, item: name, quantity: q, justification: why, flags });
     if (action === "detach_reset") {
-      c.add({ ...base, id: `${id}.detach`, kind: "mitigation", scopeCategory: "detach_reset", activity: "Detach", item: name, quantity: q, justification: why, flags });
-      c.add({ ...base, id: `${id}.reset`, kind: "reconstruction", scopeCategory: "detach_reset", activity: it.kind === "upper" ? "Re-hang & reset" : "Reset & reattach", item: name, quantity: q, justification: "Goes back after drying/remediation (same quantity).", flags: [] });
+      add({ ...base, id: `${id}.detach`, kind: "mitigation", scopeCategory: "detach_reset", activity: "Detach", item: name, quantity: q, justification: why, flags });
+      add({ ...base, id: `${id}.reset`, kind: "reconstruction", scopeCategory: "detach_reset", activity: it.kind === "upper" ? "Re-hang & reset" : "Reset & reattach", item: name, quantity: q, justification: "Goes back after drying/remediation (same quantity).", flags: [] });
     }
     if (action === "remove_replace") {
-      c.add({ ...base, id: `${id}.remove`, kind: "mitigation", scopeCategory: "removal", activity: "Remove", item: name, quantity: q, justification: why, flags });
-      c.add({ ...base, id: `${id}.replace`, kind: "reconstruction", scopeCategory: "replacement", activity: "Replace", item: name, quantity: q, justification: "Replaces what was removed (same quantity).", flags: [] });
+      add({ ...base, id: `${id}.remove`, kind: "mitigation", scopeCategory: "removal", activity: "Remove", item: name, quantity: q, justification: why, flags });
+      add({ ...base, id: `${id}.replace`, kind: "reconstruction", scopeCategory: "replacement", activity: "Replace", item: name, quantity: q, justification: "Replaces what was removed (same quantity).", flags: [] });
     }
-    if (action === "remove_dispose") c.add({ ...base, id: `${id}.dispose`, kind: "mitigation", scopeCategory: "removal", activity: "Remove & dispose", item: name, quantity: q, justification: why, flags: [...flags, "Not replaced in this scope (PM decision) — add a replacement line if needed."] });
-    if (action === "sand_refinish") c.add({ ...base, id: `${id}.refinish`, kind: "reconstruction", scopeCategory: "finish", activity: "Sand & refinish", item: name, quantity: q, justification: why, flags: [] });
+    if (action === "remove_dispose") add({ ...base, id: `${id}.dispose`, kind: "mitigation", scopeCategory: "removal", activity: "Remove & dispose", item: name, quantity: q, justification: why, flags: [...flags, "Not replaced in this scope (PM decision) — add a replacement line if needed."] });
+    if (action === "sand_refinish") add({ ...base, id: `${id}.refinish`, kind: "reconstruction", scopeCategory: "finish", activity: "Sand & refinish", item: name, quantity: q, justification: why, flags: [] });
   };
 
   // ---- what goes with it (decided first: a top on base cabinets that come out follows them) ----

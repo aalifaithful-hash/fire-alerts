@@ -542,7 +542,6 @@ export function rulesAnalyze(pages: string[]): ReportFindings {
     /\b(dispos|discard)\w*/i.test(t) ? ("remove_dispose" as const)
     : /\breplac\w*/i.test(t) ? ("remove_replace" as const)
     : /\b(detach|reset|re-?install|re-?hang)\w*/i.test(t) ? ("detach_reset" as const)
-    : /\b(remov|tear(s|ing)? out|torn out|demolish)\w*/i.test(t) ? ("remove_dispose" as const)
     : /\b(sand|refinish)(ed|ing)?\b/i.test(t) ? ("sand_refinish" as const)
     : /\b(clean|sanitiz|hepa|wip|treat)\w*/i.test(t) ? ("clean" as const)
     : null;
@@ -559,7 +558,10 @@ export function rulesAnalyze(pages: string[]): ReportFindings {
         continue;
       }
       for (const k of ks) {
-        caseworkMentions.push(fnd({ room, kind: k, action: cwAction(part), growth: POS.test(part) || /\b(growth|mold|discolou?r\w*|stain\w*|wet|damage\w*)\b/i.test(part) }, { ...st, text: part.trim() }));
+        const action = cwAction(part);
+        const removeOnly = !action && /\b(remov|tear(s|ing)? out|torn out|demolish)\w*/i.test(part);
+        const removeHint = !removeOnly ? null : /\bto (access|reach|expose|inspect)|\bfor (access|inspection)\b/i.test(part) ? ("access" as const) : /\b(damag|deteriorat|rot|swollen|delaminat|growth|mold|contaminat)\w*/i.test(part) ? ("damaged" as const) : null;
+        caseworkMentions.push(fnd({ room, kind: k, action, removeOnly, removeHint, growth: POS.test(part) || /\b(growth|mold|discolou?r\w*|stain\w*|wet|damage\w*)\b/i.test(part) }, { ...st, text: part.trim() }));
       }
     }
   }
@@ -574,9 +576,21 @@ export function rulesAnalyze(pages: string[]): ReportFindings {
     if (j < 0) continue;
     const e = caseworkMentions[j];
     const growth = e.value.growth || m.value.growth;
-    if (!e.value.action && m.value.action) caseworkMentions[j] = { ...m, value: { ...m.value, growth } };
+    if (!e.value.action && (m.value.action || (m.value.removeOnly && !e.value.removeOnly))) caseworkMentions[j] = { ...m, value: { ...m.value, growth } };
     else e.value.growth = growth;
     caseworkMentions.splice(i, 1);
+  }
+
+  // growth only on cabinets / countertops in a room: no floor or wall extent applies there (don't ask for floor area)
+  for (const r of rooms) {
+    const v = r.value;
+    if (!v.growth || v.surfaces?.length || v.areaSF != null || v.coverage || v.vague) continue;
+    const cw = caseworkMentions.filter((m) => m.value.growth && (m.value.room ?? "").toLowerCase() === v.name.toLowerCase());
+    if (!cw.length) continue;
+    const rest = r.quote.replace(/\b(back|floor|bottom|sides?|interior|shelf|shelves|base|deck)( panels?)? (of|in|under) (the )?[^.;]*?\b(cabinets?|vanity|vanities|counter ?tops?|pantry)\b/gi, " ")
+      .replace(/\b(cabinets?|vanity|vanities|counter ?tops?)\b( \w+)? (on|along|against|at) the [\w\s/-]{0,20}?\bwall\b/gi, " ");
+    if (/\b(floor(s|ing)?|walls?|drywall|sheetrock|ceilings?|carpet|subfloor|baseboards?|studs?|joists?|framing)\b/i.test(rest)) continue;
+    v.surfaces = ["cabinet"];
   }
 
   const out: ReportFindings = {

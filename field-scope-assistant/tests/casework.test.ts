@@ -34,12 +34,14 @@ describe("Kitchen: upper + lower + sink base + countertop", () => {
     expect(line(a.lines, "cw.upper.reset")).toMatchObject({ kind: "reconstruction", quantity: 8, unit: "LF" });
   });
 
-  it("countertop follows the base cabinets out: 10 LF × 25.5\" = 21.3 SF (company default depth named)", () => {
+  it("countertop follows the base cabinets out — removal in LF, new top in SF (10 LF × 25.5\" = 21.3 SF, company default named)", () => {
     const r = line(a.lines, "cw.countertop.remove");
-    expect(r).toMatchObject({ quantity: 21.3, unit: "SF" });
-    expect(r.calc).toContain('10 LF × 25.5" depth (company default');
-    expect(r.calc).toContain("= 21.3 SF");
-    expect(line(a.lines, "cw.countertop.replace").kind).toBe("reconstruction");
+    expect(r).toMatchObject({ quantity: 10, unit: "LF" });
+    expect(r.item).toContain("10 LF / 21.3 SF");
+    const n = line(a.lines, "cw.countertop.replace");
+    expect(n).toMatchObject({ kind: "reconstruction", quantity: 21.3, unit: "SF" });
+    expect(n.calc).toContain('10 LF × 25.5" depth (company default');
+    expect(n.calc).toContain("= 21.3 SF");
     expect(a.questions.join(" ")).not.toMatch(/Countertop — clean, detach/);
   });
 
@@ -69,6 +71,8 @@ describe("Kitchen: upper + lower + sink base + countertop", () => {
   it("stone countertop reset is warned; replacement is pending reconstruction", () => {
     const b = analyzeRoom(scan({ casework: [{ kind: "lower", action: "detach_reset", lf: 6 }, { kind: "countertop", action: null, lf: 6, material: "quartz" }] }), ctx());
     expect(line(b.lines, "cw.countertop.detach").flags.join(" ")).toMatch(/Stone top/);
+    expect(line(b.lines, "cw.countertop.detach")).toMatchObject({ quantity: 6, unit: "LF" });
+    expect(line(b.lines, "cw.countertop.reset")).toMatchObject({ quantity: 6, unit: "LF" });
     expect(line(a.lines, "cw.countertop.replace").status).not.toBe("accepted");
   });
 });
@@ -110,7 +114,8 @@ describe("rules and exclusions", () => {
   it("company depth from Settings → Rules & defaults", () => {
     const rules = mergeRules({ casework: { ...DEFAULT_RULES.casework, countertopDepthIn: 24 } });
     const a = analyzeRoom(scan({ casework: KITCHEN }), ctx({ rules }));
-    expect(line(a.lines, "cw.countertop.remove")).toMatchObject({ quantity: 20 }); // 10 × 24/12
+    expect(line(a.lines, "cw.countertop.replace")).toMatchObject({ quantity: 20, unit: "SF" }); // 10 × 24/12
+    expect(line(a.lines, "cw.countertop.remove")).toMatchObject({ quantity: 10, unit: "LF" });
   });
   it("customer declines pack-out → cabinet contents pack-out excluded with the wording", () => {
     const ex = Exclusion.parse({ id: "x", target: "contents_packout", reason: "customer declined", decidedBy: "customer", date: "2026-11-06", signature: "verbal" });
@@ -133,11 +138,13 @@ describe("mold report naming cabinets", () => {
   const kinds = (f.caseworkMentions ?? []).map((m) => `${m.value.room}:${m.value.kind}:${m.value.action}`);
 
   it("surfaces each item with its quoted source, room and action — generic 'cabinets' never assumed", () => {
-    expect(kinds).toEqual(expect.arrayContaining(["Kitchen:sink_base:remove_dispose", "Kitchen:lower:detach_reset", "Kitchen:countertop:remove_dispose"]));
+    expect(kinds).toEqual(expect.arrayContaining(["Kitchen:sink_base:remove_dispose", "Kitchen:lower:detach_reset", "Kitchen:countertop:null"]));
     const sb = f.caseworkMentions!.find((m) => m.value.kind === "sink_base")!;
     expect(sb.quote).toMatch(/sink base cabinet/);
     expect(sb.page).toBe(1);
     expect(f.caseworkMentions!.find((m) => m.value.kind === "lower")!.value.growth).toBe(true); // "water staining", kept when merged with the detach statement
+    // "removed to access the cabinets" — remove with no how: a question, never read as dispose
+    expect(f.caseworkMentions!.find((m) => m.value.kind === "countertop")!.value).toMatchObject({ action: null, removeOnly: true, removeHint: "access" });
     expect((f.caseworkUnspecified ?? []).map((u) => u.quote).join(" ")).toMatch(/The cabinets were inspected/);
   });
 
@@ -147,9 +154,13 @@ describe("mold report naming cabinets", () => {
     const cw = changes.filter((c) => c.key.startsWith("casework."));
     expect(cw.map((c) => c.key)).toEqual(expect.arrayContaining(["casework.sink_base", "casework.lower", "casework.countertop"]));
     expect(cw.every((c) => c.quote && !c.conflict)).toBe(true);
+    const ct = cw.find((c) => c.key === "casework.countertop")!;
+    expect(ct).toMatchObject({ optional: true, quote: "The countertop must be removed to access the cabinets." });
+    expect(ct.proposed).toMatch(/detach & reset, remove & replace, or remove & dispose\?.*usually means detach & reset.*not picked/);
+    expect(cw.filter((c) => c.key !== "casework.countertop").every((c) => !c.optional)).toBe(true);
     const r = applyVisit(f, plans, changes, cw.map((c) => c.id), "doc1");
     const k = r.rooms.find((x) => x.plan.target?.locationId === "k")!.scan;
-    expect(k.materials.casework.map((i) => `${i.kind}:${i.action}`)).toEqual(expect.arrayContaining(["sink_base:remove_dispose", "lower:detach_reset", "countertop:remove_dispose"]));
+    expect(k.materials.casework.map((i) => `${i.kind}:${i.action}`)).toEqual(expect.arrayContaining(["sink_base:remove_dispose", "lower:detach_reset", "countertop:null"]));
     expect(k.materials.casework.every((i) => i.lf == null)).toBe(true); // LF not in the report → not guessed
     const a = analyzeRoom(k, ctx({ report: f, roomLabel: "Kitchen" }));
     expect(line(a.lines, "cw.sink_base.dispose").justification).toMatch(/Report \(p\.1\): “.*sink base cabinet/);
@@ -163,8 +174,12 @@ describe("mold report naming cabinets", () => {
     expect(changes.find((c) => c.key === "casework.sink_base")).toMatchObject({ conflict: true, current: "Affected — clean" });
   });
 
-  it("still missing: LF and material, and which generic cabinets", () => {
+  it("still missing: LF and material, the remove-how question with its quote, and which generic cabinets — no floor area for cabinet-only growth", () => {
     const miss = stillMissing(f, { yearBuiltKnown: true, runKnown: true }).join("\n");
+    expect(miss).toMatch(/Kitchen: countertop — the report says “The countertop must be removed to access the cabinets\.” \(p\.1\): detach & reset, remove & replace, or remove & dispose\?/);
+    expect(miss).not.toMatch(/Kitchen: affected area/);
+    expect(miss).not.toMatch(/Kitchen: room measurements/);
+    expect(f.rooms.find((r) => r.value.name === "Kitchen")!.value.surfaces).toEqual(["cabinet"]);
     expect(miss).toMatch(/Kitchen: sink base cabinet length \(LF\) — not in the report/);
     expect(miss).toMatch(/Kitchen: countertop material and length/);
     expect(miss).toMatch(/Which cabinets \(upper \/ lower \/ vanity\)\?/);
@@ -182,5 +197,36 @@ Remediation: Remove drywall 2 feet from the floor along the affected wall in the
     expect(f.caseworkUnspecified ?? []).toHaveLength(0);
     const { changes } = proposeVisit(f, [{ locationId: "k", label: "Kitchen", roomName: "Kitchen", scan: RoomScanData.parse({ loss: { type: "mold" } }) }], 1925);
     expect(changes.some((c) => c.key.startsWith("casework."))).toBe(false);
+  });
+});
+
+describe("Adam's defaults", () => {
+  it("plain 'remove' is never read as dispose; damaged wording hints replace/dispose; explicit dispose/replace still read", () => {
+    const f = rulesAnalyze([`SAMPLE REPORT\nKitchen: The lower cabinets are water damaged and must be removed. Remove and replace the countertop. Discard the upper cabinets.`]);
+    const v = (k: string) => f.caseworkMentions!.find((m) => m.value.kind === k)!.value;
+    expect(v("lower")).toMatchObject({ action: null, removeOnly: true, removeHint: "damaged" });
+    expect(v("countertop")).toMatchObject({ action: "remove_replace", removeOnly: false });
+    expect(v("upper")).toMatchObject({ action: "remove_dispose" });
+  });
+  it("the remove-only change stays off when the report is applied with the defaults", () => {
+    const f = rulesAnalyze(KITCHEN_REPORT);
+    const empty = RoomScanData.parse({ loss: { type: "mold" } });
+    const { plans, changes } = proposeVisit(f, [{ locationId: "k", label: "Kitchen", roomName: "Kitchen", scan: empty }], 1925);
+    const r = applyVisit(f, plans, changes, changes.filter((c) => !c.conflict && !c.optional).map((c) => c.id), "doc1");
+    const k = r.rooms[0].scan;
+    expect(k.materials.casework.some((i) => i.kind === "countertop")).toBe(false);
+    expect(k.materials.flooring.affected).toBe(false); // cabinet-only growth: no floor
+  });
+  it("backsplash height has no default — blank stays blank", () => {
+    const a = analyzeRoom(scan({ casework: [{ kind: "backsplash", action: "remove_replace", lf: 8, material: "tile" }] }), ctx());
+    const l = line(a.lines, "cw.backsplash.remove");
+    expect(l.quantity).toBeNull();
+    expect(l.calc).toMatch(/height not measured.*no default height/);
+    expect(DEFAULT_RULES.casework).not.toHaveProperty("backsplashHeightIn");
+  });
+  it("cabinet growth with floor growth stated still asks for the floor area", () => {
+    const f = rulesAnalyze([`SAMPLE REPORT\nKitchen: Visible mold growth was observed on the sink base cabinet and on the kitchen floor.`]);
+    expect(f.rooms[0].value.surfaces ?? []).not.toEqual(["cabinet"]);
+    expect(stillMissing(f, { yearBuiltKnown: true, runKnown: true }).join("\n")).toMatch(/Kitchen: affected area/);
   });
 });

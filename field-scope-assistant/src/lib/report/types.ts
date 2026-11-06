@@ -114,7 +114,11 @@ export interface ReportFindings {
   otherConcerns?: Finding<string>[];
   conflicts?: ReportConflict[];
   /** Cabinets / countertops / vanity / backsplash the report names, with the action it states (null = not stated). */
-  caseworkMentions?: Finding<{ room: string | null; kind: import("../scan").CaseworkKind; action: "clean" | "detach_reset" | "remove_replace" | "remove_dispose" | "sand_refinish" | null; growth: boolean }>[];
+  caseworkMentions?: Finding<{ room: string | null; kind: import("../scan").CaseworkKind; action: "clean" | "detach_reset" | "remove_replace" | "remove_dispose" | "sand_refinish" | null; growth: boolean;
+    /** The report says only "remove" — how (detach & reset / replace / dispose) is a question for the PM, never picked. */
+    removeOnly?: boolean;
+    /** What the wording suggests: "to access" → usually detach & reset; damaged → replace or dispose. A hint, never applied. */
+    removeHint?: "access" | "damaged" | null }>[];
   /** "cabinets" named without saying which (upper / lower) — never assumed. */
   caseworkUnspecified?: Finding<string>[];
   /** The report refers to lab results but no lab tables are in its text (images or not included). */

@@ -882,7 +882,7 @@ function Casework({ roomName, items, contents, onItems, onContents }: { roomName
               <Chk label="Affected" checked={it.affected} onChange={(v) => edit(i, { affected: v })} />
               <Sel label="Action" value={it.action ?? ""} onChange={(v) => edit(i, { action: (v || null) as CaseworkItem["action"] })} options={[["", "— not decided (inspect / ask)"], ...CASEWORK_ACTIONS.map((a) => [a, CASEWORK_ACTION_LABELS[a]] as [string, string])]} />
               {!each && <Num label="Length (LF)" value={it.lf} placeholder={lfHint} onChange={(v) => edit(i, { lf: v })} />}
-              {top && <Num label={it.kind === "backsplash" ? "Height (in)" : "Depth (in)"} value={it.depthIn} placeholder={defDepth != null ? `${defDepth} (company default)` : "measure"} onChange={(v) => edit(i, { depthIn: v })} />}
+              {top && <Num label={it.kind === "backsplash" ? "Height (in)" : "Depth (in)"} value={it.depthIn} placeholder={defDepth != null ? `${defDepth} (company default)` : "measure — no default height"} onChange={(v) => edit(i, { depthIn: v })} />}
               {each && <Num label="How many (EA)" value={it.count} placeholder="count them" onChange={(v) => edit(i, { count: v })} />}
               {top && <Sel label="Material" value={it.material ?? ""} onChange={(v) => edit(i, { material: v || null })} options={[["", "— pick (not guessed)"], ...COUNTERTOP_MATERIALS.map((x) => [x, x[0].toUpperCase() + x.slice(1)] as [string, string])]} />}
               <Sel label="Extent" value={it.extent ?? ""} onChange={(v) => edit(i, { extent: (v || null) as CaseworkItem["extent"] })} options={[["", "—"], ["full", "Full run"], ["partial", "Partial (which section)"]]} />
