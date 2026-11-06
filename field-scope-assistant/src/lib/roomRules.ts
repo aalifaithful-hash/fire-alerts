@@ -1,5 +1,5 @@
 import type { Rules } from "./defaults";
-import type { Exclusion, RoomScanData, ScopeLine } from "./scan";
+import { CASEWORK_ACTION_LABELS, type Exclusion, type RoomScanData, type ScopeLine } from "./scan";
 import { baseboardLF, floodCutSF, r1, takeoff, wallPaintSF, type Takeoff } from "./takeoff";
 import { reportJustifications, stillMissing } from "./report/match";
 import { caseworkLines } from "./casework";
@@ -294,6 +294,13 @@ export function analyzeRoom(scanIn: RoomScanData, ctx: RoomContext): RoomAnalysi
   if (m.casework.length) {
     caseworkLines(m.casework, m.caseworkContents, {
       reportValues: scan.reportValues,
+      sourceOf: (k) => {
+        const it = m.casework.find((x) => x.kind === k);
+        const rv = scan.reportValues[`casework.${k}`];
+        if (!it?.action || rv !== `Affected — ${CASEWORK_ACTION_LABELS[it.action].toLowerCase()}`) return null;
+        const mm = (ctx.report?.caseworkMentions ?? []).find((x) => x.value.kind === k && (x.value.room ?? "").toLowerCase() === (scan.reportRoom ?? "").toLowerCase());
+        return mm ? `report p.${mm.page}: “${mm.quote}”` : "per the report";
+      },
       rules: R,
       room,
       water,

@@ -30,6 +30,8 @@ export interface CaseworkCtx {
   paintWall: (wall: string, why: string) => void;
   /** Values a mold report set on this scan (`casework.<kind>` → "Affected — <action>"), to say where a decision came from. */
   reportValues?: Record<string, string>;
+  /** Where an item's decision came from, for questions: the report quote (with page) when the report set it. */
+  sourceOf?: (kind: CaseworkKind) => string | null;
 }
 
 const isBox = (k: CaseworkKind) => CABINET_BOXES.includes(k);
@@ -119,12 +121,18 @@ export function caseworkLines(items: CaseworkItem[], contents: "none" | "manipul
 
   // ---- what goes with it (decided first: a top on base cabinets that come out follows them) ----
   const baseOut = affected.filter((i) => isBase(i.kind) && i.action && OUT.includes(i.action));
+  const isTop = (k: CaseworkKind) => k === "countertop" || k === "vanity_top";
+  const underTop = (topKind: CaseworkKind, xs: CaseworkItem[]) => xs.filter((b) => isBase(b.kind) && (topKind === "vanity_top" ? b.kind === "vanity" : b.kind !== "vanity"));
+  // the cabinet runs under one top disagree (e.g. sink base disposed, lowers detached & reset): the top's action is a PM question
+  const mixedUnder = (topKind: CaseworkKind) =>
+    R.countertopGoesWithBase && underTop(topKind, baseOut).length > 0 && new Set(underTop(topKind, affected.filter((i) => i.action)).map((i) => i.action)).size > 1;
+  const heldTop = (it: CaseworkItem) => isTop(it.kind) && (!it.action || !OUT.includes(it.action)) && mixedUnder(it.kind);
   const topFollows = (it: CaseworkItem) =>
-    R.countertopGoesWithBase && (it.kind === "countertop" || it.kind === "vanity_top") && (!it.action || !OUT.includes(it.action)) && baseOut.some((b) => (it.kind === "vanity_top" ? b.kind === "vanity" : b.kind !== "vanity"));
+    !heldTop(it) && R.countertopGoesWithBase && (it.kind === "countertop" || it.kind === "vanity_top") && (!it.action || !OUT.includes(it.action)) && baseOut.some((b) => (it.kind === "vanity_top" ? b.kind === "vanity" : b.kind !== "vanity"));
   const topsOut = () => items.some((i) => (i.kind === "countertop" || i.kind === "vanity_top") && ((i.affected && i.action && OUT.includes(i.action)) || topFollows(i)));
   const backsplashFollows = (it: CaseworkItem) => it.kind === "backsplash" && (!it.affected || !it.action) && topsOut();
 
-  for (const it of affected) if (!topFollows(it) && !backsplashFollows(it)) emit(it, it.action, it.action ? `${CASEWORK_LABELS[it.kind]}: ${CASEWORK_ACTION_LABELS[it.action].toLowerCase()} (${c.reportValues?.[`casework.${it.kind}`] === `Affected — ${CASEWORK_ACTION_LABELS[it.action].toLowerCase()}` ? "as the mold report states" : "PM decision"}).` : "");
+  for (const it of affected) if (!topFollows(it) && !heldTop(it) && !backsplashFollows(it)) emit(it, it.action, it.action ? `${CASEWORK_LABELS[it.kind]}: ${CASEWORK_ACTION_LABELS[it.action].toLowerCase()} (${c.reportValues?.[`casework.${it.kind}`] === `Affected — ${CASEWORK_ACTION_LABELS[it.action].toLowerCase()}` ? "as the mold report states" : "PM decision"}).` : "");
 
   const strongest = (xs: CaseworkItem[]): Action | null => (xs.some((x) => x.action === "remove_replace") ? "remove_replace" : xs.some((x) => x.action === "remove_dispose") ? "remove_dispose" : xs.length ? "detach_reset" : null);
 
@@ -133,8 +141,18 @@ export function caseworkLines(items: CaseworkItem[], contents: "none" | "manipul
   for (const topKind of topKinds) {
     const under = baseOut.filter((b) => (topKind === "vanity_top" ? b.kind === "vanity" : b.kind !== "vanity"));
     if (!under.length || !R.countertopGoesWithBase) continue;
-    const act = strongest(under)!;
     const tops = items.filter((i) => i.kind === topKind);
+    if (mixedUnder(topKind)) {
+      if (tops.length && tops.every((t) => t.affected && t.action && OUT.includes(t.action))) continue; // the PM already chose
+      const runs = underTop(topKind, affected.filter((i) => i.action)).map((b) => {
+        const src = c.sourceOf?.(b.kind);
+        return `${label(b)}${b.lf != null ? ` ${b.lf} LF` : ""}: ${CASEWORK_ACTION_LABELS[b.action!].toLowerCase()} (${src ?? "PM entry"})`;
+      });
+      const what = topKind === "vanity_top" ? "vanity top" : "countertop";
+      c.question(`${c.room}: ${what} — the cabinet runs under it have different actions (${runs.join("; ")}). Detach & reset, remove & replace, or remove & dispose the ${what}? Not picked — no ${what} line until you choose its action.`);
+      continue;
+    }
+    const act = strongest(under)!;
     const why = `The ${topKind === "vanity_top" ? "vanity top" : "countertop"} sits on base cabinets that are ${act.replace(/_/g, " ")} — it can't stay in place.`;
     if (!tops.length) {
       const b = sumLF(under.map((u) => u.kind));

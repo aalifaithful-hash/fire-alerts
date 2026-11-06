@@ -230,3 +230,53 @@ describe("Adam's defaults", () => {
     expect(stillMissing(f, { yearBuiltKnown: true, runKnown: true }).join("\n")).toMatch(/Kitchen: affected area/);
   });
 });
+
+describe("mixed base-cabinet actions under one countertop → a question, not the strongest action", () => {
+  const MIXED = [
+    { kind: "sink_base", action: "remove_dispose", lf: 3 },
+    { kind: "lower", action: "detach_reset", lf: 7 },
+  ];
+  it("mixed (PM entries): no countertop line, a question listing each run's action", () => {
+    const a = analyzeRoom(scan({ casework: [...MIXED, { kind: "countertop", action: null, lf: 10, material: "granite" }] }), ctx());
+    expect(a.lines.some((l) => l.id.startsWith("cw.countertop"))).toBe(false);
+    const q = a.questions.find((x) => /countertop — the cabinet runs under it have different actions/.test(x))!;
+    expect(q).toContain("sink base cabinet 3 LF: remove & dispose (PM entry)");
+    expect(q).toContain("lower cabinets 7 LF: detach & reset (PM entry)");
+    expect(q).toMatch(/Detach & reset, remove & replace, or remove & dispose the countertop\? Not picked/);
+    expect(a.questions.join(" ")).not.toMatch(/Countertop — clean, detach/); // one question, not two
+  });
+  it("mixed with no countertop item: no implied countertop line either", () => {
+    const a = analyzeRoom(scan({ casework: MIXED }), ctx());
+    expect(a.lines.some((l) => l.id.startsWith("cw.countertop"))).toBe(false);
+    expect(a.questions.join(" ")).toMatch(/countertop — the cabinet runs under it have different actions/);
+  });
+  it("a run that stays (clean) under a run that comes out also counts as mixed", () => {
+    const a = analyzeRoom(scan({ casework: [{ kind: "sink_base", action: "remove_replace", lf: 3 }, { kind: "lower", action: "clean", lf: 7 }, { kind: "countertop", action: null, lf: 10 }] }), ctx());
+    expect(a.lines.some((l) => l.id.startsWith("cw.countertop"))).toBe(false);
+    expect(a.questions.join(" ")).toMatch(/lower cabinets 7 LF: clean \(PM entry\)/);
+  });
+  it("once the PM picks the countertop action, that line appears (and no question)", () => {
+    const a = analyzeRoom(scan({ casework: [...MIXED, { kind: "countertop", action: "detach_reset", lf: 10, material: "laminate" }] }), ctx());
+    expect(line(a.lines, "cw.countertop.detach")).toMatchObject({ quantity: 10, unit: "LF" });
+    expect(a.lines.some((l) => l.id.startsWith("cw.countertop.dispose"))).toBe(false);
+    expect(a.questions.join(" ")).not.toMatch(/different actions/);
+  });
+  it("uniform actions keep the follow behaviour", () => {
+    const a = analyzeRoom(scan({ casework: [{ kind: "sink_base", action: "remove_dispose", lf: 3 }, { kind: "lower", action: "remove_dispose", lf: 7 }, { kind: "countertop", action: null, lf: 10, material: "laminate" }] }), ctx());
+    expect(line(a.lines, "cw.countertop.dispose")).toMatchObject({ quantity: 10, unit: "LF" });
+    expect(a.questions.join(" ")).not.toMatch(/different actions/);
+    const d = analyzeRoom(scan({ casework: [{ kind: "sink_base", action: "detach_reset", lf: 3 }, { kind: "lower", action: "detach_reset", lf: 7 }] }), ctx());
+    expect(line(d.lines, "cw.countertop.detach")).toMatchObject({ quantity: 10, unit: "LF" }); // implied from the base LF
+  });
+  it("mixed from the mold report: the question quotes the report for each run", () => {
+    const f = rulesAnalyze(KITCHEN_REPORT);
+    const empty = RoomScanData.parse({ loss: { type: "mold" }, measurements: { lengthFt: 12, widthFt: 10, heightFt: 8 } });
+    const { plans, changes } = proposeVisit(f, [{ locationId: "k", label: "Kitchen", roomName: "Kitchen", scan: empty }], 1925);
+    const r = applyVisit(f, plans, changes, changes.filter((c) => !c.conflict && !c.optional).map((c) => c.id), "doc1");
+    const a = analyzeRoom(r.rooms[0].scan, ctx({ report: f, roomLabel: "Kitchen" }));
+    expect(a.lines.some((l) => l.id.startsWith("cw.countertop"))).toBe(false);
+    const q = a.questions.find((x) => /different actions/.test(x))!;
+    expect(q).toContain("sink base cabinet: remove & dispose (report p.1: “Remediation: Remove and dispose of the sink base cabinet.”)");
+    expect(q).toContain("lower cabinets: detach & reset (report p.1: “The lower cabinets adjacent to the sink must be detached for inspection.”)");
+  });
+});
