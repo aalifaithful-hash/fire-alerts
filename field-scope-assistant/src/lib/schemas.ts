@@ -191,6 +191,8 @@ export const JobInfo = z.object({
   crewRaw: z.string().nullable().default(null), // e.g. "CC+4"
   crewChiefs: z.number().int().nullable().default(null),
   subcontractors: z.number().int().nullable().default(null),
+  /** Sub trades the PM picked (electrician, plumber, HVAC …) — never guessed. */
+  subTrades: z.array(z.string()).default([]),
   productionDays: z.string().nullable().default(null),
   equipmentDays: z.string().nullable().default(null),
   accessRestrictions: z.string().nullable().default(null),

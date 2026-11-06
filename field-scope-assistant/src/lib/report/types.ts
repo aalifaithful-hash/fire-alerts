@@ -96,6 +96,8 @@ export interface ReportFindings {
   condition: F<string>;
   /** "1 HEPA-filtered air scrubber … for 72 hours at 8 ACH in each containment area – Bedroom, Den, …" */
   airScrubber?: F<{ perContainment: number; hours: number | null; ach: number | null; rooms: string[] }>;
+  /** "All AFD devices, dehumidifiers and fans need to be shut down 24 hours … prior to the post remediation clearance inspection." */
+  equipmentOff?: F<{ hours: number; devices: string }>;
   wallRemovals?: Finding<WallRemoval>[];
   /** Extra cut beyond affected drywall the plan states (inches). */
   cutBeyondIn?: F<number>;

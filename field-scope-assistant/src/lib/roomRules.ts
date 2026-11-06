@@ -41,7 +41,7 @@ export interface RoomAnalysis {
   pending: string[];
 }
 
-type Draft = Omit<ScopeLine, "status" | "rate" | "total" | "evidence" | "flags" | "source"> & { flags?: string[]; evidence?: string[] };
+type Draft = Omit<ScopeLine, "status" | "rate" | "total" | "evidence" | "flags" | "source" | "duration"> & { flags?: string[]; evidence?: string[]; duration?: ScopeLine["duration"] };
 
 const isDemo = (l: Draft) => /^(Remove|Flood cut|Tear out)/i.test(l.activity);
 
@@ -571,6 +571,46 @@ export function analyzeRoom(scanIn: RoomScanData, ctx: RoomContext): RoomAnalysi
     const rank = (d: Draft) => (d.kind === "reconstruction" ? 1000 : seq.indexOf(d.id) === -1 ? 500 : seq.indexOf(d.id));
     drafts.sort((a, b) => rank(a) - rank(b));
   }
+  // ---------------- equipment run time ----------------
+  // Report-stated run time wins; otherwise the loss-type default (ESTIMATED); otherwise missing — never silently filled.
+  const ED = R.equipmentDuration;
+  const off = ctx.report?.equipmentOff;
+  const offText = off ? ` Shut down ${off.value.hours} h after remediation is complete, before the clearance inspection (report p.${off.page}: “${off.quote}”).` : "";
+  type Base = Omit<NonNullable<ScopeLine["duration"]>, "days" | "equipmentDays">;
+  const missingRun = (why: string): Base => ({ hours: null, source: null, estimated: true, basis: why, startStop: null });
+  const baseDuration = (d: Draft): Base | null => {
+    if (d.kind !== "equipment") return null;
+    if (d.id === "mold.negair" || d.id === "mold.dehu") {
+      const scrH = scan.containmentArea?.scrubber?.hours ?? null;
+      const q = ctx.report?.airScrubber;
+      if (scrH && d.id === "mold.negair")
+        return { hours: scrH, source: "report", estimated: false, basis: `stated by the report${q ? ` (p.${q.page}: “${q.quote}”)` : ""}`, startStop: `Start when the containment is set up; run ${scrH} h.${offText}` };
+      if (scrH)
+        return { hours: scrH, source: "report", estimated: true, basis: `runs with the containment's air scrubber (report: ${scrH} h) — the report doesn't give the dehumidifier its own run time`, startStop: `Runs with the containment.${offText}` };
+      if (ED.moldContainmentHours)
+        return { hours: ED.moldContainmentHours, source: "rule", estimated: true, basis: `company default for a mold containment (${ED.moldContainmentHours} h) — no run time in the report`, startStop: `Start when the containment is set up; run until remediation is complete.${offText}` };
+      return missingRun("no run time in the report and no company default");
+    }
+    if (water && (d.id === "equip.airmovers" || d.id === "equip.scrubber")) {
+      const cls = scan.loss.waterClass;
+      const days = (cls ? ED.waterDryingDaysByClass[cls] : undefined) ?? ED.waterDryingDaysClassUnknown;
+      if (days == null) return missingRun("no drying-days default for this water class — enter the expected drying days");
+      return {
+        hours: days * 24,
+        source: "rule",
+        estimated: true,
+        basis: `typical drying for ${cls ? `Class ${cls}` : "an unconfirmed water class"} (company default ${days} days) — estimated until moisture readings confirm dry`,
+        startStop: `Start at setup; stop when every moisture point meets its dry goal (readings ${scan.moisturePoints.length ? `on ${scan.moisturePoints.length} mapped point${scan.moisturePoints.length === 1 ? "" : "s"}` : "— map moisture points"}).`,
+      };
+    }
+    if (fireSmoke && d.id === "equip.scrubber")
+      return ED.fireSmokeScrubberDays
+        ? { hours: ED.fireSmokeScrubberDays * 24, source: "rule", estimated: true, basis: `company default for fire/smoke air scrubbing (${ED.fireSmokeScrubberDays} days)`, startStop: "Start at setup; run through cleaning until odor/particulate is controlled." }
+        : missingRun("no fire/smoke air-scrubbing duration in the company defaults — enter the expected run time");
+    return missingRun("no run-time rule for this equipment — enter the expected run time");
+  };
+  const dryNow = scan.moisturePoints.length > 0 && scan.moisturePoints.every((p) => p.reading != null && p.dryGoal != null && Number(p.reading) <= Number(p.dryGoal));
+
   const lines: ScopeLine[] = drafts.map((d0) => {
     const ov = scan.quantityOverrides[d0.id];
     const d: Draft = ov != null ? { ...d0, quantity: ov, calc: `${ov} ${d0.unit} — entered by the PM (was: ${d0.calc})` } : d0;
@@ -602,7 +642,19 @@ export function analyzeRoom(scanIn: RoomScanData, ctx: RoomContext): RoomAnalysi
                 : /“[^”]{3,}”/.test(d.justification)
                   ? "report"
                   : "rule";
-    return { ...d, rate: null, total: null, evidence: d.evidence ?? scan.moisturePoints.map((p) => p.id), status, flags, source };
+    let duration: ScopeLine["duration"] = null;
+    const b = baseDuration(d);
+    if (b) {
+      const dov = scan.durationOverrides[d.id];
+      const run: Base = dov != null ? { ...b, hours: dov, source: "pm", estimated: false, basis: `entered by the PM${b.hours != null ? ` (was ${b.hours} h — ${b.basis})` : ""}` } : b;
+      const days = run.hours != null ? Math.round((run.hours / 24) * 100) / 100 : null;
+      duration = { ...run, days, equipmentDays: days != null && d.quantity != null ? Math.round(d.quantity * days * 100) / 100 : null };
+      if (run.hours == null) {
+        flags.push(`No run time — ${run.basis}.`);
+        if (status !== "excluded" && status !== "rejected") questions.push(`${room}: how long will the ${d.item.replace(/ \(.*$/, "")} run (hours or days)? Not in the report and no company default.`);
+      } else if (run.estimated) flags.push(water && !mold ? (dryNow ? "Run time estimated — readings now meet the dry goal: enter the actual drying days." : "Run time estimated — confirm with moisture readings; enter the actual days when dry.") : "Run time estimated — confirm it.");
+    }
+    return { ...d, rate: null, total: null, evidence: d.evidence ?? scan.moisturePoints.map((p) => p.id), status, flags, source, duration };
   });
 
   if (scan.reportChanges.length) notes.push(...scan.reportChanges.map((c) => `Mold report changed: ${c}`));

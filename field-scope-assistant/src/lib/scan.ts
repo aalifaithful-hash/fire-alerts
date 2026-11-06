@@ -203,8 +203,26 @@ export const ScopeLine = z.object({
   flags: z.array(z.string()).default([]),
   /** Where the quantity comes from: "report" (quoted), "measured", "rule", "pm" — null = no traceable source. */
   source: z.enum(["report", "measured", "rule", "pm"]).nullable().default(null),
+  /** Equipment only: how long it runs. Null hours = no duration (asked for, never filled silently). */
+  duration: z
+    .object({
+      hours: z.number().nullable(),
+      days: z.number().nullable(),
+      /** quantity × days */
+      equipmentDays: z.number().nullable(),
+      source: z.enum(["report", "rule", "pm"]).nullable(),
+      /** True until the PM confirms it (water: until readings confirm dry and the actual days are entered). */
+      estimated: z.boolean(),
+      /** Where the run time comes from, with the report quote when it is the report. */
+      basis: z.string(),
+      /** When it starts and stops, where it matters. */
+      startStop: z.string().nullable().default(null),
+    })
+    .nullable()
+    .default(null),
 });
 export type ScopeLine = z.infer<typeof ScopeLine>;
+export type LineDuration = NonNullable<ScopeLine["duration"]>;
 
 export const RoomScanData = z.object({
   source: ScanSource.default(ScanSource.parse({})),
@@ -237,6 +255,8 @@ export const RoomScanData = z.object({
   reportNotes: z.array(z.string()).default([]),
   /** Quantities the PM entered on a line (line id → value) — shown as "entered by PM". */
   quantityOverrides: z.record(z.string(), z.number().nonnegative()).default({}),
+  /** Equipment run time the PM entered, in hours, by line id (replaces the report / default duration). */
+  durationOverrides: z.record(z.string(), z.number().positive()).default({}),
   /** Per-line notes (e.g. "changed by the mold report: was 48 SF") until the PM accepts or rejects the line. */
   lineNotes: z.record(z.string(), z.string()).default({}),
   /** What the last applied report changed in this room. */

@@ -44,6 +44,7 @@ const blank = (): Editable => ({
   containmentArea: null,
   reportNotes: [],
   quantityOverrides: {},
+  durationOverrides: {},
 });
 const WALLS = ["N", "E", "S", "W"];
 const num = (v: string) => (v.trim() === "" || Number.isNaN(Number(v)) ? null : Number(v));
@@ -151,7 +152,13 @@ export default function ScanTab({ ws, projectId, visitId, reload, flash }: Props
       void reload();
       return v;
     });
-  const setOptions = (body: { exclusions?: Partial<Exclusion>[]; reconstructionRequested?: boolean }) =>
+  const setDuration = (lineId: string, hours: number | null) =>
+    run("dur", async () => {
+      const v = await api<VisitScanView>(`${base}/scans/${sel}/duration`, { body: { lineId, hours } });
+      void reload();
+      return v;
+    });
+  const setOptions = (body: { exclusions?: Partial<Exclusion>[]; reconstructionRequested?: boolean; crew?: { crewChiefs: number | null; subcontractors: number | null; trades?: string[] } | null }) =>
     run("opts", async () => {
       const v = await api<VisitScanView>(`${base}/scan-options`, { method: "PUT", body });
       void reload();
@@ -178,6 +185,7 @@ export default function ScanTab({ ws, projectId, visitId, reload, flash }: Props
           }}
         />
       )}
+      {view && view.rooms.length > 0 && <CrewAndEquipment view={view} busy={!!busy} onCrew={(crew) => setOptions({ crew })} />}
       {/* 1. Room picker */}
       <h2 style={{ marginTop: 4 }}>1. Pick the room</h2>
       <div className="row">
@@ -424,7 +432,7 @@ export default function ScanTab({ ws, projectId, visitId, reload, flash }: Props
                       {k === "reconstruction" && !recon ? " — pending (not estimated)" : ""}
                     </h3>
                     {group.map((l) => (
-                      <LineRow key={l.id} line={l} disabled={!!busy || (k === "reconstruction" && !recon)} onDecide={(a) => decide([l.id], a)} onQuantity={(q) => setQty(l.id, q)} />
+                      <LineRow key={l.id} line={l} disabled={!!busy || (k === "reconstruction" && !recon)} onDecide={(a) => decide([l.id], a)} onQuantity={(q) => setQty(l.id, q)} onDuration={(h) => setDuration(l.id, h)} />
                     ))}
                   </div>
                 );
@@ -530,9 +538,11 @@ export default function ScanTab({ ws, projectId, visitId, reload, flash }: Props
 
 const SOURCE_LABEL: Record<string, string> = { report: "from the report", measured: "from your measurements", rule: "company default", pm: "entered by you" };
 
-function LineRow({ line: l, onDecide, onQuantity, disabled }: { line: ScopeLine; onDecide: (a: "accept" | "reject" | "reset") => void; onQuantity: (q: number | null) => void; disabled: boolean }) {
+function LineRow({ line: l, onDecide, onQuantity, onDuration, disabled }: { line: ScopeLine; onDecide: (a: "accept" | "reject" | "reset") => void; onQuantity: (q: number | null) => void; onDuration: (h: number | null) => void; disabled: boolean }) {
   const chip = l.status === "accepted" ? "green" : l.status === "rejected" ? "" : l.status === "excluded" ? "red" : "amber";
   const [qty, setQtyText] = useState("");
+  const [hrs, setHrs] = useState("");
+  const d = l.duration;
   return (
     <div className="card" style={{ marginBottom: 6, opacity: l.status === "rejected" || l.status === "excluded" ? 0.6 : 1 }} data-line={l.id}>
       <div className="row">
@@ -549,11 +559,35 @@ function LineRow({ line: l, onDecide, onQuantity, disabled }: { line: ScopeLine;
       <div className="small" style={{ marginTop: 2 }}>
         {l.justification}
       </div>
+      {d && (
+        <div className="small" style={{ marginTop: 2 }} data-duration={l.id}>
+          <strong>Runs:</strong> {d.hours != null ? `${d.hours} h (${d.days} day${d.days === 1 ? "" : "s"})` : "run time not set"}
+          {d.equipmentDays != null && ` · ${l.quantity} × ${d.days} days = ${d.equipmentDays} equipment-days`}{" "}
+          <span className={`chip ${d.hours == null ? "red" : d.estimated ? "amber" : "green"}`}>{d.hours == null ? "missing" : d.source === "report" ? (d.estimated ? "report-based, estimated" : "report") : d.source === "pm" ? "PM" : "estimated"}</span>
+          <div className="muted">{d.basis}</div>
+          {d.startStop && <div className="muted">{d.startStop}</div>}
+        </div>
+      )}
       {l.flags.map((fl, i) => (
         <div key={i} className="small" style={{ color: "var(--amber)" }}>
           ⚑ {fl}
         </div>
       ))}
+      {d && l.status !== "excluded" && (
+        <div className="row" style={{ marginTop: 6, gap: 4 }}>
+          <input className="in" style={{ width: 90 }} inputMode="decimal" placeholder={d.hours != null ? `${d.hours} h` : "hours"} value={hrs} onChange={(e) => setHrs(e.target.value)} aria-label={`Run time hours for ${l.activity} ${l.item}`} />
+          <button
+            className="btn sm"
+            disabled={disabled || (hrs.trim() !== "" && !(Number(hrs) > 0))}
+            onClick={() => {
+              onDuration(hrs.trim() === "" ? null : Number(hrs));
+              setHrs("");
+            }}
+          >
+            {hrs.trim() === "" && d.source === "pm" ? "Clear run time" : "Set run time (h)"}
+          </button>
+        </div>
+      )}
       {l.status !== "excluded" && (
         <div className="row" style={{ marginTop: 6 }}>
           {l.status !== "accepted" && (
@@ -658,6 +692,13 @@ function ViewTable({ view, mode }: { view: VisitScanView; mode: "pm" | "estimato
                   {l.calc}
                   <br />
                   <span className="muted">{l.justification}</span>
+                  {l.duration && (
+                    <>
+                      <br />
+                      Runs {l.duration.hours ?? "?"} h ({l.duration.days ?? "?"} days) = {l.duration.equipmentDays ?? "?"} equipment-days — {l.duration.basis}
+                      {l.duration.estimated ? " (estimated)" : ""}
+                    </>
+                  )}
                 </td>
               )}
             </tr>
@@ -904,3 +945,121 @@ function Casework({ roomName, items, contents, onItems, onContents }: { roomName
   );
 }
 type CaseworkContents = RoomScanData["materials"]["caseworkContents"];
+
+/** Crew (CC + subs) and the equipment schedule — at the top, visible without opening a room. */
+function CrewAndEquipment({ view, busy, onCrew }: { view: VisitScanView; busy: boolean; onCrew: (c: { crewChiefs: number | null; subcontractors: number | null; trades?: string[] } | null) => void }) {
+  const c = view.summary.crew;
+  const s = view.summary.equipmentSchedule;
+  const cur = c.confirmed ?? (c.proposed ? { ...c.proposed, trades: c.trades.map((t) => t.trade) } : null);
+  const [cc, setCc] = useState<number | null>(cur?.crewChiefs ?? null);
+  const [subs, setSubs] = useState<number | null>(cur?.subs ?? null);
+  const [trades, setTrades] = useState<string[]>(c.confirmed?.trades ?? c.trades.map((t) => t.trade));
+  useEffect(() => {
+    setCc(cur?.crewChiefs ?? null);
+    setSubs(cur?.subs ?? null);
+    setTrades(c.confirmed?.trades ?? c.trades.map((t) => t.trade));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [c.confirmed?.label, c.proposed?.label, c.confirmed?.trades.join(","), c.trades.map((t) => t.trade).join(",")]);
+  return (
+    <section className="card small stack" aria-label="Crew and equipment" style={{ marginBottom: 10 }}>
+      <strong style={{ fontSize: 15 }}>Crew</strong>
+      <div data-testid="crew-line">
+        {c.confirmed ? (
+          <>
+            <strong>{c.confirmed.label}</strong> — {c.confirmed.crewChiefs} crew chief{c.confirmed.crewChiefs === 1 ? "" : "s"} + {c.confirmed.subs} sub{c.confirmed.subs === 1 ? "" : "s"}
+            {c.confirmed.trades.length ? ` (${c.confirmed.trades.join(", ")})` : ""} = {c.confirmed.total} <span className="chip green">PM confirmed</span>
+          </>
+        ) : c.proposed ? (
+          <>
+            <strong>{c.proposed.label}</strong> — {c.proposed.crewChiefs} crew chief{c.proposed.crewChiefs === 1 ? "" : "s"} + {c.proposed.subs} sub{c.proposed.subs === 1 ? "" : "s"} = {c.proposed.total} <span className="chip amber">proposed — confirm</span>
+          </>
+        ) : (
+          <span style={{ color: "var(--amber)" }}>⚑ {c.note}</span>
+        )}
+      </div>
+      {c.trades.length > 0 && <div className="muted">Sub trades the scope indicates: {c.trades.map((t) => `${t.trade} (${t.why})`).join("; ")}</div>}
+      {c.phases.map((p) => (
+        <details key={p.phase}>
+          <summary>
+            {p.phase}: {p.total != null ? `${p.crewChiefs} CC + ${p.subs} subs over ${p.targetDays} day${p.targetDays === 1 ? "" : "s"}` : "not calculated"} — show the math
+          </summary>
+          <ul style={{ paddingLeft: 18, margin: "4px 0" }}>
+            {[...p.math, ...p.missing.map((x) => `⚑ ${x}`)].map((x, i) => (
+              <li key={i}>{x}</li>
+            ))}
+          </ul>
+        </details>
+      ))}
+      {c.proposed && !c.confirmed && (
+        <button className="btn sm green" disabled={busy} onClick={() => onCrew({ crewChiefs: c.proposed!.crewChiefs, subcontractors: c.proposed!.subs, trades: c.trades.map((t) => t.trade) })}>
+          Accept {c.proposed.label}
+        </button>
+      )}
+      <div className="grid2">
+        <Num label="Crew chiefs" value={cc} onChange={setCc} />
+        <Num label="Subs" value={subs} onChange={setSubs} />
+      </div>
+      <div className="row" style={{ flexWrap: "wrap", gap: 6 }} aria-label="Sub trades">
+        {c.tradeOptions.map((t) => (
+          <button key={t} type="button" className={`btn sm ${trades.includes(t) ? "on" : ""}`} aria-pressed={trades.includes(t)} onClick={() => setTrades(trades.includes(t) ? trades.filter((x) => x !== t) : [...trades, t])}>
+            {t}
+          </button>
+        ))}
+      </div>
+      <div className="row">
+        <button className="btn sm" disabled={busy || cc == null || cc < 1 || subs == null || subs < 0} onClick={() => onCrew({ crewChiefs: cc, subcontractors: subs, trades })}>
+          Save crew
+        </button>
+        {c.confirmed && (
+          <button className="btn sm ghost" disabled={busy} onClick={() => onCrew(null)}>
+            Back to the proposal
+          </button>
+        )}
+      </div>
+
+      <strong style={{ fontSize: 15, marginTop: 6 }}>Equipment schedule</strong>
+      {s.rows.length ? (
+        <div style={{ overflowX: "auto" }}>
+          <table className="small" style={{ width: "100%", borderCollapse: "collapse" }} aria-label="Equipment schedule">
+            <thead>
+              <tr>
+                <th>Equipment</th>
+                <th>Count</th>
+                <th>Hours / unit</th>
+                <th>Days</th>
+                <th>Equip-days</th>
+              </tr>
+            </thead>
+            <tbody>
+              {s.rows.map((r) => (
+                <tr key={r.type} style={{ borderTop: "1px solid var(--line)", verticalAlign: "top" }}>
+                  <td>
+                    {r.type} {r.missing ? <span className="chip red">duration missing</span> : r.estimated ? <span className="chip amber">estimated</span> : <span className="chip green">stated</span>}
+                  </td>
+                  <td>{r.count ?? "?"}</td>
+                  <td>{r.hoursPerUnit.length ? r.hoursPerUnit.join(" / ") : "—"}</td>
+                  <td>{r.days.length ? r.days.join(" / ") : "—"}</td>
+                  <td>{r.equipmentDays ?? "?"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      ) : (
+        <div className="muted">No equipment in the scope yet.</div>
+      )}
+      {s.spanText && <div data-testid="equipment-span">{s.spanText}.</div>}
+      {s.totalEquipmentDays != null && <div>Total: {s.totalEquipmentDays} equipment-days.</div>}
+      {s.rows.map((r) => (
+        <details key={r.type}>
+          <summary>{r.type} — where the run time comes from</summary>
+          <ul style={{ paddingLeft: 18, margin: "4px 0" }}>
+            {[...r.basis, ...r.startStop].map((x, i) => (
+              <li key={i}>{x}</li>
+            ))}
+          </ul>
+        </details>
+      ))}
+    </section>
+  );
+}

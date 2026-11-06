@@ -177,6 +177,47 @@ const CaseworkRules = z.object({
   stoneTopWarning: z.boolean(),
 });
 
+// ---------------------------------------------------------------------------
+// Crew: crew chiefs (CC) + subs. Production rates turn the scope's affected SF into
+// worker-days; the target days per work type turn worker-days into a crew size.
+// "CC+4" = one crew chief plus four subs. Shown with the math; the PM confirms it.
+// ---------------------------------------------------------------------------
+const WorkTypeNumbers = z.object({ ems: z.number().positive(), mitigation: z.number().positive(), mold: z.number().positive(), fire: z.number().positive(), contents: z.number().positive(), reconstruction: z.number().positive() });
+const CrewRules = z.object({
+  /** SF one worker completes in one workday, per work type (removal / cleaning / setup pace). */
+  sfPerWorkerDay: WorkTypeNumbers,
+  /** Days the crew should finish each phase in (production days the crew size is set for). */
+  targetDays: WorkTypeNumbers,
+  /** Extra worker-days per containment (poly, zipper door, negative air, teardown). */
+  containmentWorkerDays: z.number().nonnegative(),
+  /** Extra worker-days per room with contents pack-out / cleaning. */
+  contentsWorkerDaysPerRoom: z.number().nonnegative(),
+  /** One crew chief per this many containments (mold) or work areas / rooms (other work) running at once. */
+  containmentsPerCrewChief: z.number().int().positive(),
+  roomsPerCrewChief: z.number().int().positive(),
+  /** One crew chief per this many people on site (CC included). */
+  maxCrewPerCrewChief: z.number().int().positive(),
+  /** A job with more than one room / containment never defaults to a crew chief alone. */
+  minSubsMultiArea: z.number().int().nonnegative(),
+  /** Trades the PM can pick for subs (never added unless a scope line indicates it or the PM picks it). */
+  trades: z.array(z.string()),
+});
+
+// ---------------------------------------------------------------------------
+// Equipment run time. The report's stated run time wins (e.g. "72 hours at 8 ACH");
+// these are the loss-type defaults otherwise, always marked ESTIMATED. null = no
+// default: the duration is left missing and asked for — never silently filled.
+// ---------------------------------------------------------------------------
+const EquipmentDuration = z.object({
+  /** Water drying days by water class (S500 typical), until moisture readings confirm dry. */
+  waterDryingDaysByClass: z.record(z.string(), z.number().positive()),
+  waterDryingDaysClassUnknown: z.number().positive().nullable(),
+  /** Mold: air scrubber / negative air / dehumidifier run time per containment when the report doesn't state it. */
+  moldContainmentHours: z.number().positive().nullable(),
+  /** Fire / smoke / odor air scrubbing days. */
+  fireSmokeScrubberDays: z.number().positive().nullable(),
+});
+
 const FnolKeywords = z.object({
   mold: z.array(z.string()),
   ems: z.array(z.string()),
@@ -203,6 +244,8 @@ export const RulesSchema = z.object({
   hazards: Hazards,
   mold: MoldRules,
   casework: CaseworkRules,
+  crew: CrewRules,
+  equipmentDuration: EquipmentDuration,
   fnolKeywords: FnolKeywords,
 });
 export type Rules = z.infer<typeof RulesSchema>;
@@ -318,6 +361,23 @@ export const DEFAULT_RULES: Rules = {
     fullWallPaintBehindCabinets: true,
     stoneTopWarning: true,
   },
+  crew: {
+    sfPerWorkerDay: { ems: 600, mitigation: 300, mold: 150, fire: 250, contents: 400, reconstruction: 120 },
+    targetDays: { ems: 1, mitigation: 1, mold: 2, fire: 2, contents: 1, reconstruction: 5 },
+    containmentWorkerDays: 0.5,
+    contentsWorkerDaysPerRoom: 0.5,
+    containmentsPerCrewChief: 4,
+    roomsPerCrewChief: 6,
+    maxCrewPerCrewChief: 6,
+    minSubsMultiArea: 1,
+    trades: ["Plumber", "Electrician", "HVAC", "Carpenter", "Drywall", "Painter", "Flooring installer", "Countertop fabricator", "Asbestos / lead abatement", "General labor"],
+  },
+  equipmentDuration: {
+    waterDryingDaysByClass: { "1": 3, "2": 3, "3": 4, "4": 5 },
+    waterDryingDaysClassUnknown: 3,
+    moldContainmentHours: 72,
+    fireSmokeScrubberDays: null,
+  },
   fnolKeywords: {
     mold: ["mold", "mould", "microbial", "mold remediation", "mold scope", "fungal growth"],
     ems: ["ems", "emergency service", "emergency services", "emergency mitigation", "emergency response", "water out", "board up", "board-up", "24 hour emergency"],
@@ -370,5 +430,7 @@ export const RULE_SECTION_LABELS: Record<RulesSection, string> = {
   hazards: "Hazard checks",
   mold: "Mold remediation (S520 / NY licensing)",
   casework: "Cabinets & countertops",
+  crew: "Crew (crew chiefs + subs, production rates)",
+  equipmentDuration: "Equipment run time (duration defaults)",
   fnolKeywords: "FNOL keywords (parser)",
 };

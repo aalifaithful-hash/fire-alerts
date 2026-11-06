@@ -456,6 +456,7 @@ function emptyLike(): RoomScanData {
     containmentArea: null,
     reportNotes: [],
     quantityOverrides: {},
+    durationOverrides: {},
   };
 }
 

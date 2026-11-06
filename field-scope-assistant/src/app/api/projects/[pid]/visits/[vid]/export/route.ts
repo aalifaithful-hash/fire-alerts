@@ -3,6 +3,7 @@ import * as repo from "@/lib/repo";
 import { checklistDoc, UserError } from "@/lib/service";
 import { docLines, textLines, toDocx, toPdf, type ExportAppendix } from "@/lib/export";
 import { exportAppendix, getVisitScans } from "@/lib/scans";
+import { crewText, scheduleText } from "@/lib/crew";
 import { docToText } from "@/lib/render";
 import { VISIT_TYPE_LABELS } from "@/lib/schemas";
 
@@ -18,7 +19,10 @@ export const GET = route<P>(async (req, { pid, vid }) => {
   let lines = cl ? docLines(cl.doc) : visit.manualText ? textLines(visit.manualText) : docLines(visit.doc!);
   // Pre-send accuracy check: a scope that fails it is exported marked DRAFT with the reasons on top.
   if (!cl) {
-    const pre = (await getVisitScans(pid, vid)).summary.presend;
+    const view = await getVisitScans(pid, vid);
+    const pre = view.summary.presend;
+    // Crew + equipment schedule at the top of the scope (room scans only)
+    if (view.rooms.length) lines = [...textLines(`${[...crewText(view.summary.crew), "", ...scheduleText(view.summary.equipmentSchedule)].join("\n")}\n`), ...lines];
     if (!pre.ok) lines = [...textLines(`DRAFT — NOT READY TO SEND. Pre-send check failed:\n${pre.failures.map((f) => `• ${f}`).join("\n")}\n`), ...lines];
   }
   // Scope first, then estimator line items, then the sketch (room scans only).

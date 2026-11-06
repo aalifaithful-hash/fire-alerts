@@ -208,7 +208,7 @@ function crewRows(input: RenderInput) {
       label: "Crew",
       value:
         subs != null
-          ? `${j.crewRaw} (${j.crewChiefs ?? 1} crew chief${subs ? ` + ${subs} subcontractor${subs === 1 ? "" : "s"}` : ""})`
+          ? `${j.crewRaw} (${j.crewChiefs ?? 1} crew chief${(j.crewChiefs ?? 1) === 1 ? "" : "s"}${subs ? ` + ${subs} subcontractor${subs === 1 ? "" : "s"}` : ""}${j.subTrades?.length ? `; trades: ${j.subTrades.join(", ")}` : ""})`
           : j.crewRaw,
     });
   } else if (input.project.crewRequirements) rows.push({ label: "Crew", value: input.project.crewRequirements });

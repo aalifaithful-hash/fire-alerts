@@ -8,7 +8,7 @@ import { BASE_BOXES, CABINET_BOXES, CASEWORK_ACTION_LABELS, CASEWORK_LABELS, typ
  * reconstruction estimate is requested).
  */
 
-type Draft = Omit<ScopeLine, "status" | "rate" | "total" | "evidence" | "flags" | "source"> & { flags?: string[]; evidence?: string[] };
+type Draft = Omit<ScopeLine, "status" | "rate" | "total" | "evidence" | "flags" | "source" | "duration"> & { flags?: string[]; evidence?: string[]; duration?: ScopeLine["duration"] };
 type Action = NonNullable<CaseworkItem["action"]>;
 const OUT: Action[] = ["detach_reset", "remove_replace", "remove_dispose"];
 const STONE = /granite|quartz|marble|stone/i;

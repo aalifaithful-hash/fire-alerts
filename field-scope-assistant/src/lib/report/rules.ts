@@ -429,6 +429,11 @@ export function rulesAnalyze(pages: string[]): ReportFindings {
   const conflicts: ReportConflict[] = [];
   const scrS = firstSentence(S, /\bair scrubbers?\b[^.]*\b(\d+)\s*hours?\b/i) ?? firstSentence(S, /\bair scrubbers?\b[^.]*\beach containment\b/i);
   let airScrubber: ReportFindings["airScrubber"] = undefined;
+  // "All AFD devices, dehumidifiers and fans need to be shut down 24 hours … prior to the post remediation clearance inspection"
+  const offS = firstSentence(S, /\b(shut (down|off)|turned off|switched off|powered (down|off))\b[^.]*\b(\d+)\s*hours?\b[^.]*\b(clearance|post[- ]remediation|PRV|verification)\b/i) ?? firstSentence(S, /\b(\d+)\s*hours?\b[^.]*\b(shut (down|off)|turned off)\b[^.]*\b(clearance|post[- ]remediation)\b/i);
+  const equipmentOff: ReportFindings["equipmentOff"] = offS
+    ? fnd({ hours: Number(offS.text.match(/(\d+)\s*hours?/i)![1]), devices: (offS.text.match(/\b(all\s+)?([^.]*?)\s+(need to be|must be|shall be|are to be|should be)\s+(shut|turned|switched|powered)/i)?.[2] ?? "equipment").replace(/^All\s+/i, "").trim() }, offS)
+    : undefined;
   if (scrS) {
     const t = scrS.text;
     const per = t.match(/\b(?:install|use|place|set)\s+(\d+|one|two)\s+HEPA/i);
@@ -625,6 +630,7 @@ export function rulesAnalyze(pages: string[]): ReportFindings {
     condition,
     unanswered,
     airScrubber,
+    equipmentOff,
     wallRemovals,
     cutBeyondIn,
     floorTreatment,

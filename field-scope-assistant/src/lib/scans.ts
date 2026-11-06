@@ -12,6 +12,7 @@ import { buildSketch, type SketchModel } from "./sketch";
 import { nowIso, todayNY } from "./time";
 import type { Rules } from "./defaults";
 import type { ReportFindings } from "./report/types";
+import { crewPlan, equipmentSchedule, type CrewPlan, type EquipmentSchedule } from "./crew";
 
 /**
  * Room-by-room scan service. Saving any room re-analyzes the whole visit
@@ -72,6 +73,10 @@ export interface VisitScanView {
     questions: string[];
     notes: string[];
     qa: { ok: boolean; text: string }[];
+    /** Crew chiefs + subs (proposed from the scope, or confirmed by the PM). */
+    crew: CrewPlan;
+    /** How long each kind of equipment runs, and the equipment-days. */
+    equipmentSchedule: EquipmentSchedule;
     pendingReconstruction: ScopeLine[];
     /** Pre-send accuracy check: fails if any accepted line lacks a quantity, a justification or a source, or a room is on HOLD. */
     presend: { ok: boolean; accepted: number; failures: string[] };
@@ -186,7 +191,8 @@ export async function getVisitScans(projectId: string, visitId: string): Promise
     getRules(),
     yearBuiltFor(projectId),
   ]);
-  const analyzed = analyzeAll(recs, locations, visit.facts, rules, yearBuilt, visit.serviceLine, await reportsFor(projectId, recs));
+  const reports = await reportsFor(projectId, recs);
+  const analyzed = analyzeAll(recs, locations, visit.facts, rules, yearBuilt, visit.serviceLine, reports);
   const roomsOut = new Set(visit.facts.exclusions.filter((e) => e.target === "room").map((e) => e.locationId));
   const loc = (id: string) => locations.find((l) => l.id === id);
 
@@ -222,6 +228,19 @@ export async function getVisitScans(projectId: string, visitId: string): Promise
     if (!l.justification.trim()) failures.push(`${what} — no justification`);
     if (l.quantity != null && !l.source) failures.push(`${what} — no source for the quantity`);
   }
+  // equipment must say how long it runs; the crew must be set (proposed from the scope or entered)
+  for (const { l, room } of acceptedLines)
+    if (l.kind === "equipment" && (!l.duration || l.duration.hours == null)) failures.push(`${room}: ${l.activity} ${l.item} — no run time (hours / days)`);
+  const activeRooms = analyzed.filter((a) => !roomsOut.has(a.rec.locationId)).map((a) => ({ label: roomLabelOf(a.rec.locationId), data: a.rec.data, analysis: a.analysis }));
+  const crew = crewPlan(activeRooms, { rules, serviceLine: visit.serviceLine, reconstructionRequested: visit.facts.reconstructionRequested, jobInfo: visit.facts.jobInfo });
+  if (analyzed.length && !crew.confirmed && !crew.proposed) failures.push(`Crew: ${crew.note}`);
+  const waterDays = activeRooms.flatMap((r) => r.analysis.lines.filter((l) => l.id === "equip.airmovers" && l.status !== "rejected" && l.status !== "excluded" && l.duration?.days != null).map((l) => l.duration!.days!));
+  const offH = [...reports.values()].map((f) => f.equipmentOff?.value.hours).find((h) => h != null) ?? null;
+  const schedule = equipmentSchedule(activeRooms, {
+    waterDehu: affected > 0 ? dehuCalc(affected, rules) : null,
+    offBeforeClearanceHours: activeRooms.some((r) => r.data.loss.type === "mold" || r.data.reportDocumentId) ? offH : null,
+    waterDryingDays: waterDays.length ? Math.max(...waterDays) : (rules.equipmentDuration.waterDryingDaysClassUnknown ?? null),
+  });
   for (const a of analyzed) if (a.analysis.pending.some((x) => x.startsWith("HOLD")) && !roomsOut.has(a.rec.locationId)) failures.push(`${roomLabelOf(a.rec.locationId)}: HOLD — moisture source not confirmed fixed`);
   const presend = { ok: failures.length === 0, accepted: acceptedLines.length, failures };
   const decided = allLines.filter((l) => l.status === "accepted" || l.status === "rejected").length;
@@ -235,6 +254,9 @@ export async function getVisitScans(projectId: string, visitId: string): Promise
     { ok: acceptedLines.every(({ l }) => l.quantity != null || l.unit.includes("DA")), text: "Accuracy: every accepted line has a quantity" },
     { ok: acceptedLines.every(({ l }) => !!l.justification.trim()), text: "Accuracy: every accepted line has a justification" },
     { ok: acceptedLines.every(({ l }) => l.quantity == null || !!l.source), text: "Accuracy: every accepted quantity has a source (report quote, measurement, company rule or PM entry)" },
+    { ok: acceptedLines.every(({ l }) => l.kind !== "equipment" || l.duration?.hours != null), text: "Accuracy: every accepted equipment line states how long it runs" },
+    { ok: !!crew.confirmed, text: crew.confirmed ? `Crew confirmed: ${crew.confirmed.label}` : "Crew (crew chiefs + subs) confirmed by the PM" },
+    { ok: !schedule.estimated, text: "Equipment run times confirmed (none still estimated)" },
     { ok: visit.facts.exclusions.every((e) => e.signature === "signed"), text: "Exclusions have a signed customer declination" },
     { ok: analyzed.every((a) => a.rec.data.moisturePoints.length > 0 || a.rec.data.loss.type !== "water"), text: "Moisture points mapped in water rooms" },
     { ok: analyzed.every((a) => a.rec.data.loss.type !== "mold" || a.rec.data.source.status === "repaired" || a.rec.data.source.status === "stopped"), text: "Mold: moisture source confirmed fixed (remediation can't be finalized otherwise)" },
@@ -259,6 +281,8 @@ export async function getVisitScans(projectId: string, visitId: string): Promise
       questions,
       notes,
       qa,
+      crew,
+      equipmentSchedule: schedule,
       pendingReconstruction: pending,
       presend,
     },
@@ -309,7 +333,7 @@ export async function exportAppendix(projectId: string, visitId: string) {
         unit: line.unit,
         rate: rules.lineFormat.showRates && line.rate != null ? String(line.rate) : "",
         total: rules.lineFormat.showRates && line.total != null ? String(line.total) : "",
-        notes: `${line.justification} [${line.calc}]${line.flags.length ? ` ⚑ ${line.flags.join(" ")}` : ""}`,
+        notes: `${line.justification} [${line.calc}]${line.duration ? ` Runs ${line.duration.hours ?? "?"} h (${line.duration.days ?? "?"} days) = ${line.duration.equipmentDays ?? "?"} equipment-days — ${line.duration.basis}${line.duration.estimated ? " (estimated)" : ""}.` : ""}${line.flags.length ? ` ⚑ ${line.flags.join(" ")}` : ""}`,
       });
     }
   }
@@ -356,7 +380,7 @@ export async function deleteRoomScan(projectId: string, visitId: string, locatio
 export async function setScanOptions(
   projectId: string,
   visitId: string,
-  opts: { exclusions?: unknown[]; reconstructionRequested?: boolean },
+  opts: { exclusions?: unknown[]; reconstructionRequested?: boolean; crew?: { crewChiefs: number | null; subcontractors: number | null; trades?: string[] } | null },
 ) {
   const visit = await repo.getVisit(projectId, visitId);
   const rules = await getRules();
@@ -381,8 +405,24 @@ export async function setScanOptions(
     facts.reconstructionRequested = !!opts.reconstructionRequested;
     changes.push(`Reconstruction estimate ${facts.reconstructionRequested ? "requested" : "not requested"}.`);
   }
+  if (opts.crew !== undefined) {
+    const c = opts.crew;
+    const ok = (n: number | null) => n == null || (Number.isInteger(n) && n >= 0 && n <= 99);
+    if (c && (!ok(c.crewChiefs) || !ok(c.subcontractors))) throw new UserError("Crew chiefs and subs are whole numbers (0–99).");
+    if (c && c.crewChiefs != null && c.crewChiefs < 1) throw new UserError("At least one crew chief.");
+    const allowed = rules.crew.trades;
+    const trades = (c?.trades ?? []).filter((t) => allowed.includes(t));
+    facts.jobInfo = {
+      ...facts.jobInfo,
+      crewChiefs: c?.crewChiefs ?? null,
+      subcontractors: c?.subcontractors ?? null,
+      subTrades: trades,
+      crewRaw: c && c.crewChiefs != null && c.subcontractors != null ? `CC${c.crewChiefs > 1 ? ` ×${c.crewChiefs}` : ""}+${c.subcontractors}` : null,
+    };
+    changes.push(c && c.crewChiefs != null ? `Crew set: ${facts.jobInfo.crewRaw}${trades.length ? ` (${trades.join(", ")})` : ""}.` : "Crew cleared (back to the proposal).");
+  }
   await commit(projectId, visitId, facts, { trigger: "manual_edit", input: null, changes }, visit.manualText);
-  await persistAndSync(projectId, visitId, changes.join(" ").startsWith("Exclusions") ? "Exclusions applied." : "Reconstruction setting applied.");
+  await persistAndSync(projectId, visitId, changes.join(" ").startsWith("Exclusions") ? "Exclusions applied." : changes.join(" ").startsWith("Crew") ? "Crew applied." : "Reconstruction setting applied.");
   return getVisitScans(projectId, visitId);
 }
 
@@ -435,6 +475,19 @@ export async function setLineQuantity(projectId: string, visitId: string, locati
   else quantityOverrides[lineId] = Math.round(quantity * 100) / 100;
   await writeScan(projectId, visitId, locationId, { ...rec.data, quantityOverrides });
   await persistAndSync(projectId, visitId, `Quantity entered on ${lineId}.`);
+  return getVisitScans(projectId, visitId);
+}
+
+/** The PM's run time for one equipment line (hours); null clears it back to the report / default. */
+export async function setLineDuration(projectId: string, visitId: string, locationId: string, lineId: string, hours: number | null) {
+  const rec = (await rows(projectId, visitId)).find((r) => r.locationId === locationId);
+  if (!rec) throw new repo.NotFound("Room scan not found.");
+  if (hours != null && (!Number.isFinite(hours) || hours <= 0)) throw new UserError("Enter a run time above 0 hours.");
+  const durationOverrides = { ...rec.data.durationOverrides };
+  if (hours == null) delete durationOverrides[lineId];
+  else durationOverrides[lineId] = Math.round(hours * 100) / 100;
+  await writeScan(projectId, visitId, locationId, { ...rec.data, durationOverrides });
+  await persistAndSync(projectId, visitId, `Run time entered on ${lineId}.`);
   return getVisitScans(projectId, visitId);
 }
 
