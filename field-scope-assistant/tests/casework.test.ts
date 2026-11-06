@@ -259,7 +259,7 @@ describe("mixed base-cabinet actions under one countertop → a question, not th
     const a = analyzeRoom(scan({ casework: [...MIXED, { kind: "countertop", action: "detach_reset", lf: 10, material: "laminate" }] }), ctx());
     expect(line(a.lines, "cw.countertop.detach")).toMatchObject({ quantity: 10, unit: "LF" });
     expect(a.lines.some((l) => l.id.startsWith("cw.countertop.dispose"))).toBe(false);
-    expect(a.questions.join(" ")).not.toMatch(/different actions/);
+    expect(a.questions.join(" ")).not.toMatch(/countertop — the cabinet runs under it have different actions/);
   });
   it("uniform actions keep the follow behaviour", () => {
     const a = analyzeRoom(scan({ casework: [{ kind: "sink_base", action: "remove_dispose", lf: 3 }, { kind: "lower", action: "remove_dispose", lf: 7 }, { kind: "countertop", action: null, lf: 10, material: "laminate" }] }), ctx());
@@ -278,5 +278,48 @@ describe("mixed base-cabinet actions under one countertop → a question, not th
     const q = a.questions.find((x) => /different actions/.test(x))!;
     expect(q).toContain("sink base cabinet: remove & dispose (report p.1: “Remediation: Remove and dispose of the sink base cabinet.”)");
     expect(q).toContain("lower cabinets: detach & reset (report p.1: “The lower cabinets adjacent to the sink must be detached for inspection.”)");
+  });
+});
+
+describe("mixed base-cabinet actions → the toe kick is a question too", () => {
+  const MIXED = [
+    { kind: "sink_base", action: "remove_dispose", lf: 3 },
+    { kind: "lower", action: "detach_reset", lf: 10 },
+  ];
+  it("mixed: no toe-kick line (not 13 LF of the strongest action), a question naming each run", () => {
+    const a = analyzeRoom(scan({ casework: MIXED }), ctx());
+    expect(a.lines.some((l) => l.id.startsWith("cw.toe_kick"))).toBe(false);
+    const q = a.questions.find((x) => /toe kick — the base-cabinet runs above it have different actions/.test(x))!;
+    expect(q).toContain("sink base cabinet 3 LF: remove & dispose (PM entry)");
+    expect(q).toContain("lower cabinets 10 LF: detach & reset (PM entry)");
+    expect(q).toMatch(/Not picked — no toe-kick line until you choose/);
+  });
+  it("mixed with a run staying (clean) in a wet room: no drying toe-kick line either, just the question", () => {
+    const a = analyzeRoom(scan({ casework: [{ kind: "sink_base", action: "remove_replace", lf: 3 }, { kind: "lower", action: "clean", lf: 7 }] }), ctx());
+    expect(a.lines.some((l) => l.id.startsWith("cw.toe_kick"))).toBe(false);
+    expect(a.questions.join(" ")).toMatch(/toe kick — .*lower cabinets 7 LF: clean/);
+  });
+  it("once the PM adds the toe kick with its action, that line appears and the question goes", () => {
+    const a = analyzeRoom(scan({ casework: [...MIXED, { kind: "toe_kick", action: "remove_replace", lf: 13 }] }), ctx());
+    expect(line(a.lines, "cw.toe_kick.remove")).toMatchObject({ quantity: 13, unit: "LF" });
+    expect(a.questions.join(" ")).not.toMatch(/toe kick — the base-cabinet runs/);
+  });
+  it("mixed actions set by the mold report: the toe-kick question quotes the report", () => {
+    const f = rulesAnalyze(KITCHEN_REPORT);
+    const empty = RoomScanData.parse({ loss: { type: "mold" }, measurements: { lengthFt: 12, widthFt: 10, heightFt: 8 } });
+    const { plans, changes } = proposeVisit(f, [{ locationId: "k", label: "Kitchen", roomName: "Kitchen", scan: empty }], 1925);
+    const r = applyVisit(f, plans, changes, changes.filter((c) => !c.conflict && !c.optional).map((c) => c.id), "doc1");
+    const a = analyzeRoom(r.rooms[0].scan, ctx({ report: f, roomLabel: "Kitchen" }));
+    expect(a.lines.some((l) => l.id.startsWith("cw.toe_kick"))).toBe(false);
+    expect(a.questions.find((x) => /toe kick — /.test(x))).toContain("sink base cabinet: remove & dispose (report p.1:");
+  });
+  it("uniform actions keep the follow behaviour (toe kick = base LF)", () => {
+    const r = analyzeRoom(scan({ casework: [{ kind: "sink_base", action: "remove_replace", lf: 3 }, { kind: "lower", action: "remove_replace", lf: 10 }] }), ctx());
+    expect(line(r.lines, "cw.toe_kick.with_base")).toMatchObject({ activity: "Replace", quantity: 13, unit: "LF" });
+    const d = analyzeRoom(scan({ casework: [{ kind: "sink_base", action: "detach_reset", lf: 3 }, { kind: "lower", action: "detach_reset", lf: 10 }] }), ctx());
+    expect(line(d.lines, "cw.toe_kick.with_base")).toMatchObject({ activity: "Reinstall", quantity: 13 });
+    for (const x of [r, d]) expect(x.questions.join(" ")).not.toMatch(/toe kick — the base-cabinet runs/);
+    const st = analyzeRoom(scan({ casework: [{ kind: "lower", action: "clean", lf: 7 }] }), ctx());
+    expect(line(st.lines, "cw.toe_kick.drying")).toMatchObject({ quantity: 7 }); // all staying: drying access as before
   });
 });

@@ -161,8 +161,16 @@ export function caseworkLines(items: CaseworkItem[], contents: "none" | "manipul
     } else
       for (const t of tops.filter((x) => !x.affected || !x.action || !OUT.includes(x.action))) emit({ ...t, affected: true }, act, why);
   }
+  // toe kick: the base-cabinet runs above it disagree (e.g. sink base disposed, lowers detached & reset)
+  // → a PM question, not the strongest action; no toe-kick line until the PM chooses
+  const baseActed = affected.filter((i) => isBase(i.kind) && i.action);
+  const toeMixed = baseOut.length > 0 && new Set(baseActed.map((i) => i.action)).size > 1 && !items.some((i) => i.kind === "toe_kick");
+  if (toeMixed) {
+    const runs = baseActed.map((b) => `${label(b)}${b.lf != null ? ` ${b.lf} LF` : ""}: ${CASEWORK_ACTION_LABELS[b.action!].toLowerCase()} (${c.sourceOf?.(b.kind) ?? "PM entry"})`);
+    c.question(`${c.room}: toe kick — the base-cabinet runs above it have different actions (${runs.join("; ")}). Reinstall, replace, or remove & dispose the toe kick (and for which runs)? Not picked — no toe-kick line until you choose; add a Toe kick item with its action and LF.`);
+  }
   // toe kick under base cabinets that come out
-  if (baseOut.length && !items.some((i) => i.kind === "toe_kick")) {
+  if (!toeMixed && baseOut.length && !items.some((i) => i.kind === "toe_kick")) {
     const act = strongest(baseOut)!;
     if (act !== "remove_dispose") {
       const b = sumLF(baseOut.map((x) => x.kind));
@@ -171,7 +179,7 @@ export function caseworkLines(items: CaseworkItem[], contents: "none" | "manipul
   }
   // base cabinets left in place in a wet / moldy room: toe kick off for drying / inspection
   const baseStaying = affected.filter((i) => isBase(i.kind) && (i.action === "clean" || i.action === "sand_refinish"));
-  if ((c.water || c.mold) && baseStaying.length && !items.some((i) => i.kind === "toe_kick")) {
+  if (!toeMixed && (c.water || c.mold) && baseStaying.length && !items.some((i) => i.kind === "toe_kick")) {
     const b = sumLF(baseStaying.map((x) => x.kind));
     c.add({ id: "cw.toe_kick.drying", ruleId: "casework.toeKick", kind: "mitigation", scopeCategory: "cavity_access", activity: "Remove", item: "toe kick for drying / inspection access", quantity: b.lf, unit: "LF", calc: b.lf != null ? `= base cabinet LF: ${b.calc}` : "base cabinet LF not measured", justification: "Reach the cavity under base cabinets that stay in place." });
     c.add({ id: "cw.toe_kick.drying.reinstall", ruleId: "casework.toeKick", kind: "reconstruction", scopeCategory: "detach_reset", activity: "Reinstall", item: "toe kick (replace if damaged)", quantity: b.lf, unit: "LF", calc: b.lf != null ? `= base cabinet LF: ${b.calc}` : "base cabinet LF not measured", justification: "Goes back on (same LF)." });
