@@ -308,6 +308,14 @@ const LOSS_TYPES: [string, RegExp][] = [
   ["water", /\b(water|leak|pipe|burst|overflow|flood|supply line|dishwasher|washing machine|toilet|sprinkler)\b/i],
 ];
 
+/** "Visit:", "Visit date/time:", "Appointment -", "Scheduled for:", "Inspection date:" followed by a date and/or time. */
+const VISIT_LABEL = "(?:visit|appointment|appt\\.?|scheduled(?:\\s+for)?|inspection)(?:\\s*(?:date|time|date\\s*(?:\\/|&|and)\\s*time))?";
+const VISIT_ANYWHERE_RE = new RegExp(
+  `(?:^|[\\s.;,|/(])(${VISIT_LABEL})\\s*[:\\-–=]\\s*((?:(?:mon|tue|wed|thu|fri|sat|sun)[a-z]*\\.?,?\\s+)?(?:\\d{1,2}[\\/.-]\\d{1,2}(?:[\\/.-]\\d{2,4})?|[A-Za-z]{3,9}\\.?\\s+\\d{1,2}(?:,?\\s*\\d{4})?|\\d{4}-\\d{2}-\\d{2})?(?:\\s*(?:at|@|,)?\\s*\\d{1,2}(?::\\d{2})?\\s*(?:am|pm|a\\.m\\.|p\\.m\\.)?)?)`,
+  "im",
+);
+const VISIT_INLINE_RE = new RegExp(`\\s(?=${VISIT_LABEL}\\s*[:\\-–=]\\s*(?:\\d|[A-Za-z]{3,9}\\.?\\s+\\d))`, "i");
+
 export function parseFnol(rawText: string, rules: Rules = DEFAULT_RULES): FnolParse {
   const text = normalizeFnolText(rawText);
   const k = rules.fnolKeywords;
@@ -422,7 +430,7 @@ export function parseFnol(rawText: string, rules: Rules = DEFAULT_RULES): FnolPa
   const lossDate = dolRaw && lossDateVal ? { ...dolRaw, value: lossDateVal } : null;
   if (dolRaw && !lossDateVal) warnings.push(`Loss date "${dolRaw.value}" could not be read — enter it.`);
 
-  const typeOfLoss = labeled(text, [...LABELS.lossType], 60);
+  const typeOfLoss = labeled(text, [...LABELS.lossType], 400);
   let lossType: Found<string> | null = null;
   const lossHay = typeOfLoss?.value ?? text;
   for (const [name, re] of LOSS_TYPES)
@@ -434,8 +442,10 @@ export function parseFnol(rawText: string, rules: Rules = DEFAULT_RULES): FnolPa
   // ("Type of Loss: Water - supply line burst under kitchen sink"); a free "Notes:" / "Details:" line only last.
   let causeOfLoss = labeled(text, ["cause of loss", "cause", "loss description", "description of loss", "description"], 400);
   if (!causeOfLoss && typeOfLoss) {
-    const rest = typeOfLoss.value.replace(/^[A-Za-z /&]+?\s*[-–—:,(]\s*/, "").replace(/\)\s*$/, "").trim();
-    if (rest && rest !== typeOfLoss.value && rest.split(/\s+/).length >= 2) causeOfLoss = { value: rest, confidence: "keyword", evidence: typeOfLoss.evidence };
+    // the cause stops where another field starts on the same line ("… for drying. Visit: 11/06/2026 10:00 AM")
+    const own = typeOfLoss.value.split(VISIT_INLINE_RE)[0].replace(/[\s/|;,]+$/, "").trim();
+    const rest = own.replace(/^[A-Za-z /&]+?\s*[-–—:,(]\s*/, "").replace(/\)\s*$/, "").trim();
+    if (rest && rest !== own && rest.split(/\s+/).length >= 2) causeOfLoss = { value: rest, confidence: "keyword", evidence: typeOfLoss.evidence };
   }
   if (!causeOfLoss) causeOfLoss = labeled(text, ["notes", "details"], 400);
 
@@ -452,8 +462,10 @@ export function parseFnol(rawText: string, rules: Rules = DEFAULT_RULES): FnolPa
   }
 
   // scheduled visit: "Visit: 11/06/2026 10:00 AM", "Appointment: 11/6 at 2:30 pm", "Scheduled: …"
+  // Read wherever it sits — its own line, or inside another field's line — as long as a date or time follows the label.
   let appointment: FnolParse["appointment"] = null;
-  const apRaw = labeled(text, ["visit date", "visit time", "visit", "appointment date", "appointment time", "appointment", "scheduled", "scheduled for", "inspection date"], 80);
+  const apM = [...text.matchAll(new RegExp(VISIT_ANYWHERE_RE.source, "gim"))].find((m) => m[2].trim());
+  const apRaw = apM ? { value: apM[2].trim(), evidence: LINE(apM[0]) } : null;
   if (apRaw) {
     const d = normalizeDate(apRaw.value);
     const tm = apRaw.value.match(/\b(\d{1,2})(?::(\d{2}))?\s*(am|pm|a\.m\.|p\.m\.)\b/i) ?? apRaw.value.match(/\b(\d{1,2}):(\d{2})\b/);
@@ -463,7 +475,7 @@ export function parseFnol(rawText: string, rules: Rules = DEFAULT_RULES): FnolPa
       if (tm[3]) h = (h % 12) + (/p/i.test(tm[3]) ? 12 : 0);
       if (h >= 0 && h < 24) time = `${String(h).padStart(2, "0")}:${tm[2] ?? "00"}`;
     }
-    if (d || time) appointment = { value: { date: d, time }, confidence: "labeled", evidence: apRaw.evidence };
+    if (d || time) appointment = { value: { date: d, time }, confidence: "labeled", evidence: apRaw.evidence.slice(0, 160) };
   }
 
   // ---------- what was not read (shown highlighted on the review screen) ----------

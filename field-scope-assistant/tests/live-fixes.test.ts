@@ -214,3 +214,78 @@ describe("9 — Quick Start: combined kinds of work and EMS", () => {
     expect((await intake.assignmentsForProject(r.projectId))[0].serviceLines).toEqual(["mold"]);
   });
 });
+
+describe("6b re-test — the exact FNOL pasted on the live preview: visit date/time read in every layout", () => {
+  const OWN = `TEST FNOL RETEST — Water loss
+Address: TEST RETEST — 999 Browser FNOL Lane, Brooklyn, NY 11201, Unit 3C
+Customer: TEST FNOL Retest Customer
+Phone: 555-030-7777
+Claim: CLM-TEST-FNOL-R2
+Date of loss: 11/05/2026
+Loss type: Water — kitchen sink supply line leak, Class 2 water damage, kitchen and living room wet. Air movers and dehumidifier needed for drying.
+Visit: 11/06/2026 10:00 AM
+Notes: TEST retest project, FNOL parse fix check.`;
+  const EMBEDDED = OWN.replace("drying.\nVisit:", "drying. Visit:");
+  const CAUSE = "kitchen sink supply line leak, Class 2 water damage, kitchen and living room wet. Air movers and dehumidifier needed for drying.";
+  const layouts: [string, string][] = [
+    ["Visit on its own line", OWN],
+    ["Visit embedded at the end of the Loss type line", EMBEDDED],
+    ["one line, fields separated by spaces", OWN.split("\n").join(" ")],
+    ["one line, fields separated by ' / '", OWN.split("\n").join(" / ")],
+    ["one line ' / ', Visit embedded in Loss type", EMBEDDED.split("\n").join(" / ")],
+    ["Windows line endings", OWN.replace(/\n/g, "\r\n")],
+  ];
+  for (const [name, text] of layouts)
+    it(name, () => {
+      const f = parseFnol(text);
+      expect(f.appointment?.value).toEqual({ date: "2026-11-06", time: "10:00" });
+      expect(f.causeOfLoss?.value).toBe(CAUSE); // full cause, never the Notes line, never the embedded Visit
+      expect(f.lossDate?.value).toBe("2026-11-05"); // the loss date is not taken as the visit
+      const i = intake.parseToInput(f);
+      expect(i).toMatchObject({ appointmentDate: "2026-11-06", appointmentTime: "10:00" });
+    });
+
+  it("other ways an FNOL states the visit", () => {
+    const v = (line: string) => parseFnol(OWN.replace("Visit: 11/06/2026 10:00 AM", line)).appointment?.value ?? null;
+    expect(v("Visit date/time: 11/06/2026 10:00 AM")).toEqual({ date: "2026-11-06", time: "10:00" });
+    expect(v("Appointment: Nov 6, 2026 at 2:30 pm")).toEqual({ date: "2026-11-06", time: "14:30" });
+    expect(v("Scheduled for: Friday, 11/06/2026 @ 9:15am")).toEqual({ date: "2026-11-06", time: "09:15" });
+    expect(v("Visit type: initial walk-through")).toBeNull(); // a stage, not a date
+  });
+
+  it("through the inbox route: the review form gets the date and time, and the saved visit has them", async () => {
+    await resetLocalDbForTests();
+    const route = await import("@/app/api/fnol/parse/route");
+    const { NextRequest } = await import("next/server");
+    for (const text of [OWN, EMBEDDED]) {
+      const res = await (route.POST as (r: InstanceType<typeof NextRequest>, c: { params: Promise<object> }) => Promise<Response>)(new NextRequest("http://localhost/api/fnol/parse", { method: "POST", body: JSON.stringify({ text }), headers: { "content-type": "application/json" } }), { params: Promise.resolve({}) });
+      const j = (await res.json()) as { parse: { appointment: unknown }; input: Parameters<typeof intake.createAssignmentFromFnol>[1] };
+      expect(j.parse.appointment).toMatchObject({ value: { date: "2026-11-06", time: "10:00" } });
+      expect(j.input).toMatchObject({ appointmentDate: "2026-11-06", appointmentTime: "10:00" });
+      const saved = await intake.createAssignmentFromFnol(text, j.input);
+      const { projectId, visitId } = await intake.openProjectForAssignment(saved.assignment.id);
+      const visit = await repo.getVisit(projectId, visitId);
+      expect(visit.visitDate).toBe("2026-11-06");
+      expect(visit.appointmentTime).toBe("10:00");
+      expect((await repo.getProject(projectId)).name.match(/3C/g)).toHaveLength(1);
+    }
+  });
+});
+
+describe("re-test residual (a) — checks with nothing to check don't pass", () => {
+  beforeEach(() => resetLocalDbForTests());
+  it("no accepted equipment, no exclusions → shown as 'nothing to check', not a pass", async () => {
+    const { view } = await visitWith("mitigation", waterScan);
+    for (const re of [/every accepted equipment line states how long it runs/, /Exclusions have a signed customer declination/, /every accepted quantity has a source/]) {
+      const q = qa(view, re)!;
+      expect(q).toMatchObject({ ok: false, na: true });
+      expect(q.text).toMatch(/nothing to check|to check yet/);
+    }
+  });
+  it("once there is something to check, the check runs for real", async () => {
+    const { p, l, v } = await visitWith("mitigation", waterScan);
+    const view = await scans.decideLines(p.id, v.id, l.id, ["equip.airmovers"], "accept");
+    expect(qa(view, /every accepted equipment line states how long it runs/)).toMatchObject({ ok: true });
+    expect(qa(view, /every accepted equipment line/)!.na).toBeUndefined();
+  });
+});

@@ -72,7 +72,8 @@ export interface VisitScanView {
     affectedFloorSF: number;
     questions: string[];
     notes: string[];
-    qa: { ok: boolean; text: string }[];
+    /** na = nothing to check yet (e.g. no exclusions, no accepted equipment) — shown neutral, never as a pass. */
+    qa: { ok: boolean; text: string; na?: boolean }[];
     /** Crew chiefs + subs (proposed from the scope, or confirmed by the PM). */
     crew: CrewPlan;
     /** How long each kind of equipment runs, and the equipment-days. */
@@ -266,22 +267,26 @@ export async function getVisitScans(projectId: string, visitId: string): Promise
   const live = analyzed.filter((a) => !roomsOut.has(a.rec.locationId));
   const waterRooms = live.filter((a) => isWater(a.rec.data));
   const moldRooms = live.filter((a) => isMold(a.rec.data));
-  const qa = [
+  const accEquip = acceptedLines.filter(({ l }) => l.kind === "equipment");
+  const accRemovals = allLines.filter((l) => l.status === "accepted" && /^(Remove|Flood cut)/.test(l.activity));
+  const accQty = acceptedLines.filter(({ l }) => l.quantity != null);
+  const na = (text: string) => ({ ok: false, na: true, text });
+  const qa: { ok: boolean; text: string; na?: boolean }[] = [
     { ok: analyzed.length > 0, text: "At least one room scanned" },
     { ok: analyzed.every((a) => a.rec.data.source.where !== "unknown"), text: "Every room has a source or migration path" },
     { ok: analyzed.every((a) => a.analysis.takeoff.floorSF != null), text: "Every room is measured" },
     { ok: live.every((a) => a.rec.data.loss.type != null), text: "Loss type set in every room" },
     ...(waterRooms.length ? [{ ok: waterRooms.every((a) => a.rec.data.loss.category != null), text: "Water category confirmed in every water room" }] : []),
-    { ok: allLines.filter((l) => l.status === "accepted" && /^(Remove|Flood cut)/.test(l.activity)).every((l) => !!l.justification), text: "Every accepted removal has a justification" },
+    accRemovals.length ? { ok: accRemovals.every((l) => !!l.justification), text: "Every accepted removal has a justification" } : na("Every accepted removal has a justification — no accepted removals to check yet"),
     { ok: allLines.length > 0 && decided === allLines.filter((l) => l.status !== "excluded").length, text: "Every suggested line accepted or rejected" },
     { ok: acceptedLines.length > 0, text: acceptedLines.length ? `${acceptedLines.length} line${acceptedLines.length === 1 ? "" : "s"} accepted` : "At least one line accepted" },
     { ok: acceptedLines.length > 0 && acceptedLines.every(({ l }) => l.quantity != null), text: "Accuracy: every accepted line has a quantity" },
     { ok: acceptedLines.length > 0 && acceptedLines.every(({ l }) => !!l.justification.trim()), text: "Accuracy: every accepted line has a justification" },
-    { ok: acceptedLines.every(({ l }) => l.quantity == null || !!l.source), text: "Accuracy: every accepted quantity has a source (report quote, measurement, company rule or PM entry)" },
-    { ok: acceptedLines.every(({ l }) => l.kind !== "equipment" || l.duration?.hours != null), text: "Accuracy: every accepted equipment line states how long it runs" },
+    accQty.length ? { ok: accQty.every(({ l }) => !!l.source), text: "Accuracy: every accepted quantity has a source (report quote, measurement, company rule or PM entry)" } : na("Accuracy: every accepted quantity has a source — no accepted lines to check yet"),
+    accEquip.length ? { ok: accEquip.every(({ l }) => l.duration?.hours != null), text: "Accuracy: every accepted equipment line states how long it runs" } : na("Accuracy: every accepted equipment line states how long it runs — no accepted equipment lines to check yet"),
     { ok: !!crew.confirmed, text: crew.confirmed ? `Crew confirmed: ${crew.confirmed.label}` : "Crew (crew chiefs + subs) confirmed by the PM" },
     { ok: !schedule.estimated, text: "Equipment run times confirmed (none still estimated)" },
-    { ok: visit.facts.exclusions.every((e) => e.signature === "signed"), text: "Exclusions have a signed customer declination" },
+    visit.facts.exclusions.length ? { ok: visit.facts.exclusions.every((e) => e.signature === "signed"), text: "Exclusions have a signed customer declination" } : na("Exclusions have a signed customer declination — no exclusions recorded, nothing to check"),
     ...(waterRooms.length ? [{ ok: waterRooms.every((a) => a.rec.data.moisturePoints.length > 0), text: "Moisture points mapped in water rooms" }] : []),
     // mold: "stopped" is not "fixed" — only a source marked repaired counts
     ...(moldRooms.length ? [{ ok: moldRooms.every((a) => a.rec.data.source.status === "repaired"), text: "Mold: moisture source confirmed repaired (remediation can't be finalized otherwise; “stopped” is not enough)" }] : []),

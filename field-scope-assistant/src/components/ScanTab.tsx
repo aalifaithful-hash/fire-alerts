@@ -546,8 +546,8 @@ export default function ScanTab({ ws, projectId, visitId, reload, flash }: Props
             </div>
             <strong>Before sending</strong>
             {view.summary.qa.map((q, i) => (
-              <div key={i} style={{ color: q.ok ? "var(--green)" : "var(--amber)" }}>
-                {q.ok ? "✓" : "⚑"} {q.text}
+              <div key={i} style={{ color: q.na ? "var(--muted)" : q.ok ? "var(--green)" : "var(--amber)" }} data-qa={q.na ? "na" : q.ok ? "ok" : "fail"}>
+                {q.na ? "○" : q.ok ? "✓" : "⚑"} {q.text}
               </div>
             ))}
             {view.yearBuilt == null && <div className="muted">Year built unknown — set it on the property page (lead/asbestos check).</div>}

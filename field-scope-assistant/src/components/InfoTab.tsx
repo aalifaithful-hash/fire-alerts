@@ -32,6 +32,16 @@ export default function InfoTab({ ws, projectId, reload, flash }: { ws: Workspac
   return (
     <div className="stack">
       <p className="small muted">Nothing here is required. Your field notes update cause, source, category and crew automatically.</p>
+      {(() => {
+        // every kind of work on this job: from its assignments (FNOL / Quick Start "Also on this job") and its visits
+        const kinds = [...new Set([...ws.assignments.flatMap((a) => a.serviceLines), ...ws.visits.map((v) => v.serviceLine).filter((x): x is NonNullable<typeof x> => !!x)])];
+        return kinds.length ? (
+          <div className="card small" aria-label="Kinds of work on this job">
+            <strong>Kinds of work on this job:</strong> {kinds.map((k) => SERVICE_LINE_LABELS[k]).join(" + ")}
+            {kinds.length > 1 && <span className="muted"> — “Loss type” below is the main loss; each kind of work has its own visit or service line.</span>}
+          </div>
+        ) : null;
+      })()}
       {FIELDS.map((f) => (
         <label key={f.key} className="field">
           <span>{f.label}</span>
