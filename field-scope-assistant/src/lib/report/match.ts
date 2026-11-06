@@ -1,4 +1,4 @@
-import type { RoomScanData } from "../scan";
+import { CASEWORK_ACTION_LABELS, CASEWORK_LABELS, CABINET_BOXES, type CaseworkKind, type RoomScanData } from "../scan";
 import type { Finding, ReportFindings, RoomFinding } from "./types";
 
 /**
@@ -68,6 +68,10 @@ export function planRooms(f: ReportFindings, rooms: VisitRoom[]): RoomPlan[] {
   const list: { name: string; report: Finding<RoomFinding> | null; runOnly: boolean }[] = f.rooms.map((r) => ({ name: r.value.name, report: r, runOnly: !r.value.growth }));
   const run = f.flooringContinuous?.value.continues ? f.flooringContinuous.value.rooms : [];
   for (const n of run) if (!list.some((x) => x.name.toLowerCase() === n.toLowerCase())) list.push({ name: n, report: null, runOnly: true });
+  for (const m of f.caseworkMentions ?? []) {
+    const n = m.value.room;
+    if (n && !list.some((x) => x.name.toLowerCase() === n.toLowerCase())) list.push({ name: n, report: null, runOnly: !m.value.growth });
+  }
   if (!list.length) list.push({ name: "", report: null, runOnly: false });
   const used = new Set<VisitRoom>();
   const plans: RoomPlan[] = list.map((x) => {
@@ -233,6 +237,13 @@ export function proposeVisit(f: ReportFindings, rooms: VisitRoom[], yearBuilt: n
       d("source.status", "Moisture source status", cur, f.sourceFixed.value ? "repaired" : "active", f.sourceFixed);
       if (cur && cur !== want && !prev["source.status"]) mismatches.push(`${multi ? `${where}: ` : ""}Source: you have "${cur}", the report says it is ${f.sourceFixed.value ? "repaired" : "not fixed"}.`);
     }
+    // cabinets / countertops / vanity / backsplash the report names for this room (no room named → the primary room)
+    for (const m of caseworkFor(f, p)) {
+      const k = m.value.kind;
+      const it = s?.materials.casework.find((x) => x.kind === k);
+      const cur = it ? (it.affected ? (it.action ? cwText(it.action) : null) : "Not affected") : null;
+      d(`casework.${k}`, CASEWORK_LABELS[k], cur, m.value.action ? cwText(m.value.action) : "Affected — action not stated in the report", m);
+    }
     if (f.moistureSource && p.primary && !s?.source.fixture) d("source.fixture", "Moisture source", null, f.moistureSource.value, f.moistureSource);
 
     for (const x of drafts) {
@@ -346,6 +357,17 @@ export function applyVisit(f: ReportFindings, plans: RoomPlan[], changes: Report
       scan.containmentArea = a ? { extent: a.extent, none: false, scrubber: f.airScrubber ? { perContainment: f.airScrubber.value.perContainment, hours: f.airScrubber.value.hours, ach: f.airScrubber.value.ach } : null } : { extent: null, none: true, scrubber: null };
       set("containment.area");
     }
+    for (const m of caseworkFor(f, p)) {
+      const k = m.value.kind;
+      if (!has(p, `casework.${k}`)) continue;
+      const list = scan.materials.casework;
+      const it = list.find((x) => x.kind === k);
+      if (it) {
+        it.affected = true;
+        if (m.value.action) it.action = m.value.action;
+      } else list.push({ kind: k, affected: true, action: m.value.action, extent: null, section: null, wall: null, lf: null, depthIn: null, count: null, material: null });
+      set(`casework.${k}`);
+    }
     if (has(p, "contents.packout")) scan.contents = { present: true, affected: true, items: "items in the remediation area (porous items that can't be laundered are discarded)", handling: "packout" };
     if (has(p, "source.hold") && f.sourceMustBeAddressed) scan.source.hold = f.sourceMustBeAddressed.quote.slice(0, 300);
     // report notes for this room (not scope lines)
@@ -376,6 +398,13 @@ export function applyVisit(f: ReportFindings, plans: RoomPlan[], changes: Report
   return { rooms: out, yearBuilt };
 }
 
+const cwText = (a: keyof typeof CASEWORK_ACTION_LABELS) => `Affected — ${CASEWORK_ACTION_LABELS[a].toLowerCase()}`;
+
+/** The report's cabinet / countertop mentions for one planned room (no room named → the primary room). */
+function caseworkFor(f: ReportFindings, p: RoomPlan) {
+  return (f.caseworkMentions ?? []).filter((m) => (m.value.room ? m.value.room.toLowerCase() === p.name.toLowerCase() : p.primary));
+}
+
 const findMention = (text: string, room: string) => {
   const t = text.toLowerCase();
   const r = room.toLowerCase();
@@ -398,6 +427,8 @@ function emptyLike(): RoomScanData {
     ventHvacIfInaccessible: false,
       framing: { growth: false, where: null, action: null },
       cabinets: { affected: false, lf: null, detach: false },
+      casework: [],
+      caseworkContents: null,
       fixtures: [],
     },
     contents: { present: false, affected: false, items: null, handling: "none" },
@@ -463,6 +494,17 @@ export function stillMissing(f: ReportFindings, ctx: { yearBuiltKnown: boolean; 
       else if (r.value.coverage && !r.value.coverage.whole && r.value.coverage.pct == null && r.value.areaSF == null)
         out.push(`${n}growth on part of the floor with no SF or boundary — measure the affected area (clarify with the assessor)`);
     }
+  // cabinets / countertops: what the report doesn't give (never guessed)
+  for (const m of (f.caseworkMentions ?? []).filter((x) => !scope || (x.value.room ? (x.value.room || null)?.toLowerCase() === scope.room?.toLowerCase() : docWide))) {
+    const n = m.value.room ? `${m.value.room}: ` : "";
+    const k: CaseworkKind = m.value.kind;
+    const lbl = CASEWORK_LABELS[k].toLowerCase();
+    if (!m.value.action) out.push(`${n}${lbl} — clean, detach & reset, or remove? The report names it (p.${m.page}) but doesn't say`);
+    if (k === "countertop" || k === "vanity_top" || k === "backsplash") out.push(`${n}${lbl} material and length (LF) — not in the report; measure on site and pick the material`);
+    else if ((CABINET_BOXES as readonly string[]).includes(k) || k === "toe_kick") out.push(`${n}${lbl} length (LF) — not in the report; measure on site`);
+    else if (k === "doors_drawers") out.push(`${n}how many doors / drawer fronts — not in the report`);
+  }
+  if (docWide) for (const u of f.caseworkUnspecified ?? []) out.push(`Which cabinets (upper / lower / vanity)? The report says “${u.quote}” (p.${u.page}) — not assumed`);
   if (docWide) {
     const cr = [!f.containment && "containment level", !f.removalExtent && "how far removal goes"].filter(Boolean);
     if (cr.length) out.push(`Remediation plan: ${cr.join(" and ")}`);
@@ -516,6 +558,10 @@ export function reportJustifications(f: ReportFindings, measured: { lengthFt: nu
     j["mold.framing.remove"] = `Report: ${q(f.framingGrowth)}`;
   }
   if (f.baseboardBacksGrowth?.value.growth) j["baseboard"] = `Report: ${q(f.baseboardBacksGrowth)} — discard that baseboard.`;
+  for (const m of f.caseworkMentions ?? []) {
+    const here = m.value.room ? !!reportRoom && m.value.room.toLowerCase() === reportRoom.toLowerCase() : !reportRoom || rf === f.rooms[0];
+    if (here) j[`cw.${m.value.kind}`] = `Report (p.${m.page}): ${q(m)}`;
+  }
   if (f.clearanceCriteria || f.clearanceBy) j["mold.pcv"] = `Report: ${q(f.clearanceCriteria ?? f.clearanceBy)}`;
   else {
     const said = f.unanswered.find((u) => u.key === "clearanceCriteria" && u.quote)?.quote;

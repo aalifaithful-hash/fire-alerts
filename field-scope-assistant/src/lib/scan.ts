@@ -53,6 +53,57 @@ export const ScanLoss = z.object({
   assessmentReport: z.enum(["none", "pending", "received"]).nullable().default(null),
 });
 
+/** Cabinets, countertops and what goes with them — one entry per item, each measured on its own. */
+export const CASEWORK_KINDS = ["upper", "lower", "sink_base", "pantry", "island", "vanity", "countertop", "vanity_top", "toe_kick", "doors_drawers", "hardware", "interior", "backsplash"] as const;
+export type CaseworkKind = (typeof CASEWORK_KINDS)[number];
+export const CASEWORK_LABELS: Record<CaseworkKind, string> = {
+  upper: "Upper cabinets (wall)",
+  lower: "Lower cabinets (base)",
+  sink_base: "Sink base cabinet",
+  pantry: "Pantry / tall cabinet",
+  island: "Island / peninsula cabinets",
+  vanity: "Bathroom vanity cabinet",
+  countertop: "Countertop",
+  vanity_top: "Vanity top",
+  toe_kick: "Toe kick",
+  doors_drawers: "Cabinet doors / drawer fronts",
+  hardware: "Cabinet hardware (handles, knobs)",
+  interior: "Cabinet interior / shelves",
+  backsplash: "Backsplash",
+};
+/** Cabinet boxes (measured in LF along the wall). */
+export const CABINET_BOXES: CaseworkKind[] = ["upper", "lower", "sink_base", "pantry", "island", "vanity"];
+/** Base cabinets: a countertop sits on them and a toe kick runs under them. */
+export const BASE_BOXES: CaseworkKind[] = ["lower", "sink_base", "island", "vanity"];
+export const CASEWORK_ACTIONS = ["clean", "detach_reset", "remove_replace", "remove_dispose", "sand_refinish"] as const;
+export const CASEWORK_ACTION_LABELS: Record<(typeof CASEWORK_ACTIONS)[number], string> = {
+  clean: "Clean",
+  detach_reset: "Detach & reset",
+  remove_replace: "Remove & replace",
+  remove_dispose: "Remove & dispose",
+  sand_refinish: "Sand & refinish",
+};
+export const COUNTERTOP_MATERIALS = ["laminate", "granite", "quartz", "marble", "solid surface", "butcher block", "tile", "concrete", "other"] as const;
+
+export const CaseworkItem = z.object({
+  kind: z.enum(CASEWORK_KINDS),
+  affected: z.boolean().default(true),
+  action: z.enum(CASEWORK_ACTIONS).nullable().default(null),
+  extent: z.enum(["full", "partial"]).nullable().default(null),
+  /** Which section, for a partial run (e.g. "sink wall"). */
+  section: z.string().nullable().default(null),
+  /** Wall it sits on (N/E/S/W or a named wall) — wall work behind it is measured in that wall's SF. */
+  wall: z.string().nullable().default(null),
+  lf: n.default(null),
+  /** Countertop / vanity top depth, or backsplash height (inches). */
+  depthIn: n.default(null),
+  /** Doors / drawer fronts / hardware (each). */
+  count: n.default(null),
+  /** Countertop / backsplash material — selected, never guessed. */
+  material: z.string().nullable().default(null),
+});
+export type CaseworkItem = z.infer<typeof CaseworkItem>;
+
 export const ScanMaterials = z.object({
   flooring: z
     .object({
@@ -104,6 +155,9 @@ export const ScanMaterials = z.object({
   cabinets: z
     .object({ affected: z.boolean().default(false), lf: n.default(null), detach: z.boolean().default(false) })
     .default({ affected: false, lf: null, detach: false }),
+  casework: z.array(CaseworkItem).default([]),
+  /** What happens to the contents inside the cabinets when they are detached or removed. */
+  caseworkContents: z.enum(["none", "manipulate", "clean_onsite", "packout"]).nullable().default(null),
   fixtures: z.array(z.string()).default([]),
 });
 

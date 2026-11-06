@@ -522,6 +522,63 @@ export function rulesAnalyze(pages: string[]): ReportFindings {
   const labTablesMissing = labMention && !labTables && !moldType ? fnd("The report refers to lab results, but no lab tables are in its text", labMention) : undefined;
   if (labTablesMissing) unanswered.push({ key: "moldType", label: "Mold type", quote: labTablesMissing.quote });
 
+  // --- cabinets, countertops, vanity, backsplash ---
+  const CW: [RegExp, import("../scan").CaseworkKind][] = [
+    [/\bsink base( cabinets?)?\b/i, "sink_base"],
+    [/\b(upper|wall) cabinets?\b/i, "upper"],
+    [/\b(lower|base) cabinets?\b/i, "lower"],
+    [/\bvanity (top|countertop)\b/i, "vanity_top"],
+    [/\bvanity( cabinets?| base)?\b/i, "vanity"],
+    [/\bcounter ?tops?\b/i, "countertop"],
+    [/\bback ?splash\b/i, "backsplash"],
+    [/\btoe ?kicks?\b/i, "toe_kick"],
+    [/\bpantry\b/i, "pantry"],
+    [/\b(island|peninsula)\b/i, "island"],
+    [/\b(cabinet doors|drawer fronts?|drawers)\b/i, "doors_drawers"],
+  ];
+  const caseworkMentions: NonNullable<ReportFindings["caseworkMentions"]> = [];
+  const caseworkUnspecified: Finding<string>[] = [];
+  const cwAction = (t: string) =>
+    /\b(dispos|discard)\w*/i.test(t) ? ("remove_dispose" as const)
+    : /\breplac\w*/i.test(t) ? ("remove_replace" as const)
+    : /\b(detach|reset|re-?install|re-?hang)\w*/i.test(t) ? ("detach_reset" as const)
+    : /\b(remov|tear(s|ing)? out|torn out|demolish)\w*/i.test(t) ? ("remove_dispose" as const)
+    : /\b(sand|refinish)(ed|ing)?\b/i.test(t) ? ("sand_refinish" as const)
+    : /\b(clean|sanitiz|hepa|wip|treat)\w*/i.test(t) ? ("clean" as const)
+    : null;
+  for (const st of S) {
+    for (const part of st.text.split(/(?<=[.!?;])\s+/)) {
+      if (!/\b(cabinet|counter ?top|vanity|back ?splash|toe ?kick|pantry|island|peninsula|drawer)/i.test(part)) continue;
+      if (negOnly(part) && !cwAction(part)) continue;
+      const room = findRoomName(part) ?? st.room ?? null;
+      const kinds = CW.filter(([re]) => re.test(part)).map(([, k]) => k);
+      // "sink base cabinet" is not also a generic base cabinet
+      const ks = kinds.includes("sink_base") ? kinds.filter((k) => k !== "lower" || /\b(lower|base) cabinets\b/i.test(part.replace(/sink base cabinets?/gi, ""))) : kinds;
+      if (!ks.length && /\bcabinets?\b/i.test(part)) {
+        if (!caseworkUnspecified.some((x) => x.quote === part.trim())) caseworkUnspecified.push(fnd(part.trim(), { ...st, text: part.trim() }));
+        continue;
+      }
+      for (const k of ks) {
+        caseworkMentions.push(fnd({ room, kind: k, action: cwAction(part), growth: POS.test(part) || /\b(growth|mold|discolou?r\w*|stain\w*|wet|damage\w*)\b/i.test(part) }, { ...st, text: part.trim() }));
+      }
+    }
+  }
+
+  // a later statement with no room ("Remove the sink base cabinet.") belongs to the one room the report names cabinets in
+  const cwRooms = [...new Set(caseworkMentions.map((m) => m.value.room).filter(Boolean))];
+  if (cwRooms.length === 1) for (const m of caseworkMentions) if (!m.value.room) m.value.room = m.room = cwRooms[0];
+  // one finding per room + item: the statement that says what to do wins (its quote is kept); growth from any
+  for (let i = caseworkMentions.length - 1; i >= 0; i--) {
+    const m = caseworkMentions[i];
+    const j = caseworkMentions.findIndex((x, k) => k < i && x.value.kind === m.value.kind && x.value.room === m.value.room);
+    if (j < 0) continue;
+    const e = caseworkMentions[j];
+    const growth = e.value.growth || m.value.growth;
+    if (!e.value.action && m.value.action) caseworkMentions[j] = { ...m, value: { ...m.value, growth } };
+    else e.value.growth = growth;
+    caseworkMentions.splice(i, 1);
+  }
+
   const out: ReportFindings = {
     analyzer: "rules",
     readable: textChars >= 40,
@@ -569,6 +626,8 @@ export function rulesAnalyze(pages: string[]): ReportFindings {
     otherConcerns,
     conflicts,
     labTablesMissing,
+    caseworkMentions,
+    caseworkUnspecified,
   };
   const label = new Map(FINDING_LABELS);
   for (const k of SCOPE_FINDINGS)

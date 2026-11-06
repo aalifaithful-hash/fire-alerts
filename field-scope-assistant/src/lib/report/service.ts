@@ -2,7 +2,7 @@ import { newId } from "../ids";
 import { getProperty, updateProperty, assignmentsForProject } from "../intake";
 import { extractPageTexts, isPdf } from "../pdf";
 import * as repo from "../repo";
-import type { RoomScanData, ScopeLine } from "../scan";
+import { CASEWORK_ACTION_LABELS, CASEWORK_LABELS, type RoomScanData, type ScopeLine } from "../scan";
 import { getVisitScans, previewVisit, saveRoomScan, setLineReview } from "../scans";
 import { MAX_UPLOAD_BYTES, UserError } from "../service";
 import { blobStoredPath, projectKey, putFile } from "../storage";
@@ -136,6 +136,13 @@ function panelRows(f: ReportFindings): ReportPanelRow[] {
     const parts = [v.lengthFt != null ? `${v.lengthFt} × ${v.widthFt} ft${v.heightFt ? `, ${v.heightFt} ft ceiling` : ""}` : "no measurements", v.areaSF != null ? `${v.areaSF} SF` : null, v.coverage ? (v.coverage.whole ? "whole floor" : `part of the floor${v.coverage.pct != null ? ` (${v.coverage.pct}%)` : ""}`) : v.vague ? `extent only “${v.vague}”` : null, v.growth ? null : "no growth"].filter(Boolean);
     rows.push({ key: `room:${v.name}`, label: `Room — ${v.name}`, value: parts.join(", "), quote: r.quote, page: r.page, stated: "found" });
   }
+  // cabinets / countertops / vanity / backsplash the report names
+  for (const m of f.caseworkMentions ?? []) {
+    const v = m.value;
+    rows.push({ key: `casework:${v.room ?? ""}:${v.kind}`, label: `${v.room ? `${v.room} — ` : ""}${CASEWORK_LABELS[v.kind]}`, value: `${v.growth ? "Affected" : "Named"} — ${v.action ? CASEWORK_ACTION_LABELS[v.action].toLowerCase() : "action not stated"}`, quote: m.quote, page: m.page, stated: "found" });
+  }
+  for (const [i, u] of (f.caseworkUnspecified ?? []).entries())
+    rows.push({ key: `casework:unspecified:${i}`, label: "Cabinets (which not stated)", value: "Not assumed — say which (upper / lower / vanity)", quote: u.quote, page: u.page, stated: "open" });
   return rows;
 }
 

@@ -113,6 +113,10 @@ export interface ReportFindings {
   hazardNote?: F<string>;
   otherConcerns?: Finding<string>[];
   conflicts?: ReportConflict[];
+  /** Cabinets / countertops / vanity / backsplash the report names, with the action it states (null = not stated). */
+  caseworkMentions?: Finding<{ room: string | null; kind: import("../scan").CaseworkKind; action: "clean" | "detach_reset" | "remove_replace" | "remove_dispose" | "sand_refinish" | null; growth: boolean }>[];
+  /** "cabinets" named without saying which (upper / lower) — never assumed. */
+  caseworkUnspecified?: Finding<string>[];
   /** The report refers to lab results but no lab tables are in its text (images or not included). */
   labTablesMissing?: F<string>;
   /** Items the report leaves open; `quote` is set when it says so explicitly (e.g. "to be determined"). */

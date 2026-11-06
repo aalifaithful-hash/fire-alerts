@@ -158,6 +158,25 @@ const MoldRules = z.object({
   licensingNote: z.string(),
 });
 
+// ---------------------------------------------------------------------------
+// Cabinets & countertops
+// ---------------------------------------------------------------------------
+const CaseworkRules = z.object({
+  /** Standard kitchen countertop depth (inches) — pre-filled, editable per item. */
+  countertopDepthIn: z.number().positive(),
+  vanityTopDepthIn: z.number().positive(),
+  /** Toe kick LF = the base-cabinet LF above it when no toe-kick length is entered. */
+  toeKickEqualsBaseLF: z.boolean(),
+  /** Base cabinets detached or removed → the countertop on them is detached & reset or removed & replaced (never left floating). */
+  countertopGoesWithBase: z.boolean(),
+  /** Sink base / vanity involved → disconnect & reconnect sink, faucet (and disposal). */
+  plumbingResetWithSink: z.boolean(),
+  /** Cabinets removed or detached → seal/prime & paint the full wall behind them (wall SF) when the wall is named. */
+  fullWallPaintBehindCabinets: z.boolean(),
+  /** Warn that stone tops (granite, quartz, marble) risk breaking when detached & reset. */
+  stoneTopWarning: z.boolean(),
+});
+
 const FnolKeywords = z.object({
   mold: z.array(z.string()),
   ems: z.array(z.string()),
@@ -183,6 +202,7 @@ export const RulesSchema = z.object({
   programs: z.array(Program),
   hazards: Hazards,
   mold: MoldRules,
+  casework: CaseworkRules,
   fnolKeywords: FnolKeywords,
 });
 export type Rules = z.infer<typeof RulesSchema>;
@@ -289,6 +309,15 @@ export const DEFAULT_RULES: Rules = {
     licensingNote:
       "NY: mold work over 10 SF needs a licensed mold assessor's remediation plan, a licensed remediation contractor (not the assessor) and independent post-remediation clearance (NYS Labor Law Art. 32). NYC buildings with 10+ units: Local Law 61 work practices.",
   },
+  casework: {
+    countertopDepthIn: 25.5,
+    vanityTopDepthIn: 22,
+    toeKickEqualsBaseLF: true,
+    countertopGoesWithBase: true,
+    plumbingResetWithSink: true,
+    fullWallPaintBehindCabinets: true,
+    stoneTopWarning: true,
+  },
   fnolKeywords: {
     mold: ["mold", "mould", "microbial", "mold remediation", "mold scope", "fungal growth"],
     ems: ["ems", "emergency service", "emergency services", "emergency mitigation", "emergency response", "water out", "board up", "board-up", "24 hour emergency"],
@@ -340,5 +369,6 @@ export const RULE_SECTION_LABELS: Record<RulesSection, string> = {
   programs: "Program deadlines",
   hazards: "Hazard checks",
   mold: "Mold remediation (S520 / NY licensing)",
+  casework: "Cabinets & countertops",
   fnolKeywords: "FNOL keywords (parser)",
 };

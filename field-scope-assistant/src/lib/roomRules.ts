@@ -2,6 +2,7 @@ import type { Rules } from "./defaults";
 import type { Exclusion, RoomScanData, ScopeLine } from "./scan";
 import { baseboardLF, floodCutSF, r1, takeoff, wallPaintSF, type Takeoff } from "./takeoff";
 import { reportJustifications, stillMissing } from "./report/match";
+import { caseworkLines } from "./casework";
 import type { ReportFindings } from "./report/types";
 
 /**
@@ -289,6 +290,23 @@ export function analyzeRoom(scanIn: RoomScanData, ctx: RoomContext): RoomAnalysi
       }
     }
   }
+  // cabinets & countertops (before the wall paint: cabinets that come out add the wall behind them)
+  if (m.casework.length) {
+    caseworkLines(m.casework, m.caseworkContents, {
+      reportValues: scan.reportValues,
+      rules: R,
+      room,
+      water,
+      mold,
+      category: cat,
+      wallsWorked: m.walls.affectedWalls,
+      isKitchenOrBath: /kitchen|bath|vanity|powder/i.test(room),
+      add,
+      question: (q) => questions.push(q),
+      note: (x) => notes.push(x),
+      paintWall,
+    });
+  }
   if (paintWalls.size) {
     const labels = [...paintWalls.keys()];
     const ws = t.walls.filter((w) => paintWalls.has(w.label));
@@ -319,8 +337,8 @@ export function analyzeRoom(scanIn: RoomScanData, ctx: RoomContext): RoomAnalysi
       add({ id: "ceiling.paint", ruleId: "whatGoesWithIt.ceilingStain", kind: "reconstruction", scopeCategory: "painting", activity: "Seal (stain-blocking) & paint", item: `full ceiling${m.ceiling.action === "remove" ? " after drywall replacement" : ""}`, quantity: t.ceilingSF, unit: "SF", calc: t.ceilingSF != null ? `${t.floorCalc} (full ceiling)` : "ceiling not measured", justification: `${m.ceiling.action === "remove" ? "Ceiling drywall replaced" : fireSmoke ? "Smoke/soot on the ceiling" : "Stained ceiling"}${cpct !== 100 ? ` (${cpct}% affected)` : ""} — the FULL ceiling is sealed (stain-blocking) and painted for a uniform finish. Quantity is the full ceiling SF, not the affected or removed area.` });
   }
 
-  // ---------------- cabinets ----------------
-  if (m.cabinets.affected) {
+  // ---------------- cabinets & countertops ----------------
+  if (!m.casework.length && m.cabinets.affected) {
     const lf = m.cabinets.lf;
     const calc = lf != null ? `${lf} LF of base cabinets (measured)` : "cabinet length not measured";
     if (m.cabinets.detach)
@@ -339,7 +357,7 @@ export function analyzeRoom(scanIn: RoomScanData, ctx: RoomContext): RoomAnalysi
 
   // ---------------- mold remediation (S520) ----------------
   const pending: string[] = [];
-  const growthHere = m.flooring.affected || m.walls.affectedWalls.length > 0 || m.ceiling.affected || m.framing.growth || m.baseboard.affected || m.cabinets.affected || m.moldSpecial.length > 0;
+  const growthHere = m.flooring.affected || m.walls.affectedWalls.length > 0 || m.ceiling.affected || m.framing.growth || m.baseboard.affected || m.cabinets.affected || m.casework.some((i) => i.affected) || m.moldSpecial.length > 0;
   const runOnlyRoom = mold && !!scan.reportDocumentId && !growthHere;
   if (runOnlyRoom) notes.push("No growth reported in this room — it is in the continuous flooring run, so only the flooring replacement applies here.");
   const group = mold ? scan.containmentGroup : null;
@@ -536,7 +554,10 @@ export function analyzeRoom(scanIn: RoomScanData, ctx: RoomContext): RoomAnalysi
   // ---------------- decisions, exclusions, reconstruction switch ----------------
   if (mold && ctx.report && scan.loss.assessmentReport === "received") {
     const rj = reportJustifications(ctx.report, { lengthFt: t.floorSF != null ? scan.measurements.lengthFt : null, widthFt: t.floorSF != null ? scan.measurements.widthFt : null }, room.replace(/^.*— /, ""), scan.reportRoom);
-    for (const d of drafts) if (rj[d.id]) d.justification = `${d.justification} ${rj[d.id]}`;
+    for (const d of drafts) {
+      const k = rj[d.id] ? d.id : d.id.startsWith("cw.") ? d.id.split(".").slice(0, 2).join(".") : "";
+      if (rj[k]) d.justification = `${d.justification} ${rj[k]}`;
+    }
   }
   if (mold) {
     const seq = ["mold.containment", "mold.negair", "mold.ppe", "baseboard", "mold.floor.remove", "mold.underlayment.remove", "mold.walls.remove", "mold.insulation.remove", "mold.subfloor.remove", "mold.framing.remove", "mold.floor.choice", "mold.floor.sand", "mold.subfloor.clean", "mold.walls.cavity", "mold.encapsulate", "mold.framing.clean", "mold.caulking", "mold.vent", "mold.antimicrobial", "mold.dehu", "mold.dispose", "mold.finalclean", "mold.pcv"];
@@ -594,10 +615,10 @@ function exclusionFor(d: Draft, ctx: RoomContext): string | null {
     if (e.target === "room" && e.locationId === ctx.locationId) return `room excluded — ${why}`;
     if (d.kind === "contents") {
       // moving contents to reach the structure is structural access, not contents cleaning
-      if (d.id === "contents.manip") continue;
+      if (d.id === "contents.manip" || d.id === "contents.cabinets.manip") continue;
       if (e.target === "contents_all" || (e.target === "service_line" && e.serviceLine === "contents")) return `contents work declined — ${why}`;
-      if (e.target === "contents_cleaning" && (d.id === "contents.clean" || d.id === "contents.evaluate")) return `contents cleaning declined — ${why}`;
-      if (e.target === "contents_packout" && d.id === "contents.packout") return `pack-out declined — ${why}`;
+      if (e.target === "contents_cleaning" && (d.id === "contents.clean" || d.id === "contents.cabinets.clean" || d.id === "contents.evaluate")) return `contents cleaning declined — ${why}`;
+      if (e.target === "contents_packout" && (d.id === "contents.packout" || d.id === "contents.cabinets.packout")) return `pack-out declined — ${why}`;
     }
     if (e.target === "service_line" && e.serviceLine === "reconstruction" && d.kind === "reconstruction") return `reconstruction excluded — ${why}`;
     if (e.target === "service_line" && e.serviceLine === "mitigation" && (d.kind === "mitigation" || d.kind === "equipment" || d.kind === "monitoring")) return `mitigation excluded — ${why}`;

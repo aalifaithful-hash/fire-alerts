@@ -4,7 +4,8 @@ import ReportPanel from "./ReportPanel";
 import { api } from "./api";
 import { locLabel } from "./labels";
 import type { WorkspaceData } from "./types";
-import { EXCLUSION_LABELS, EXCLUSION_TARGETS, WATER_SOURCES, type Exclusion, type RoomScanData, type ScopeLine } from "@/lib/scan";
+import { CASEWORK_ACTION_LABELS, CASEWORK_ACTIONS, CASEWORK_KINDS, CASEWORK_LABELS, COUNTERTOP_MATERIALS, EXCLUSION_LABELS, EXCLUSION_TARGETS, WATER_SOURCES, type CaseworkItem, type CaseworkKind, type Exclusion, type RoomScanData, type ScopeLine } from "@/lib/scan";
+import { DEFAULT_RULES, type Rules } from "@/lib/defaults";
 import type { VisitScanView } from "@/lib/scans";
 
 type Editable = Omit<RoomScanData, "lines" | "decisions">;
@@ -25,6 +26,8 @@ const blank = (): Editable => ({
     ventHvacIfInaccessible: false,
     framing: { growth: false, where: null, action: null },
     cabinets: { affected: false, lf: null, detach: false },
+    casework: [],
+    caseworkContents: null,
     fixtures: [],
   },
   contents: { present: false, affected: false, items: null, handling: "none" },
@@ -94,6 +97,16 @@ export default function ScanTab({ ws, projectId, visitId, reload, flash }: Props
     // only when switching rooms
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sel]);
+  // the scan changed on the server (e.g. a mold report was applied) — pick it up unless there are unsaved edits
+  const serverData = room?.data;
+  useEffect(() => {
+    if (!serverData || dirty) return;
+    const { lines: _l, decisions: _d, ...rest } = serverData;
+    void _l;
+    void _d;
+    setForm(rest);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [serverData]);
 
   if (!visitId) return <div className="card">Start a visit on the Scope tab first, then scan its rooms here.</div>;
 
@@ -257,16 +270,30 @@ export default function ScanTab({ ws, projectId, visitId, reload, flash }: Props
               <Sel label="Baseboard action" value={m.baseboard.action ?? ""} onChange={(v) => upd((d) => (d.materials.baseboard.action = (v || null) as Editable["materials"]["baseboard"]["action"]))} options={[["", "By category"], ["detach_reset", "Detach & reset"], ["remove", "Remove"]]} />
             </div>
             {m.baseboard.affected && <Walls label="Baseboard walls (blank = affected walls)" value={m.baseboard.walls} onChange={(v) => upd((d) => (d.materials.baseboard.walls = v))} />}
-            <strong>Ceiling, cabinets, fixtures</strong>
+            <strong>Ceiling and fixtures</strong>
             <div className="grid2">
               <Chk label="Ceiling affected" checked={m.ceiling.affected} onChange={(v) => upd((d) => (d.materials.ceiling.affected = v))} />
               <Num label="% of ceiling" value={m.ceiling.affectedPct} onChange={(v) => upd((d) => (d.materials.ceiling.affectedPct = v))} />
               <Sel label="Ceiling action" value={m.ceiling.action ?? ""} onChange={(v) => upd((d) => (d.materials.ceiling.action = (v || null) as Editable["materials"]["ceiling"]["action"]))} options={[["", "—"], ["dry", "Dry in place"], ["seal_paint", "Seal & paint stain"], ["remove", "Remove"]]} />
-              <Chk label="Base cabinets affected" checked={m.cabinets.affected} onChange={(v) => upd((d) => (d.materials.cabinets.affected = v))} />
-              <Num label="Cabinet length (LF)" value={m.cabinets.lf} onChange={(v) => upd((d) => (d.materials.cabinets.lf = v))} />
-              <Chk label="Detach cabinets" checked={m.cabinets.detach} onChange={(v) => upd((d) => (d.materials.cabinets.detach = v))} />
             </div>
             <Txt label="Fixtures on the floor (comma list: toilet, vanity…)" value={m.fixtures.join(", ") || null} onChange={(v) => upd((d) => (d.materials.fixtures = (v ?? "").split(",").map((x) => x.trim()).filter(Boolean)))} />
+            <Casework
+              roomName={room?.label ?? ""}
+              items={m.casework}
+              contents={m.caseworkContents}
+              onItems={(items) => upd((d) => (d.materials.casework = items))}
+              onContents={(v) => upd((d) => (d.materials.caseworkContents = v))}
+            />
+            {!m.casework.length && m.cabinets.affected && (
+              <div className="grid2">
+                <span className="small muted" style={{ gridColumn: "1 / -1" }}>
+                  Older entry (base cabinets only) — add the cabinets above instead to get the full set of lines.
+                </span>
+                <Chk label="Base cabinets affected" checked={m.cabinets.affected} onChange={(v) => upd((d) => (d.materials.cabinets.affected = v))} />
+                <Num label="Cabinet length (LF)" value={m.cabinets.lf} onChange={(v) => upd((d) => (d.materials.cabinets.lf = v))} />
+                <Chk label="Detach cabinets" checked={m.cabinets.detach} onChange={(v) => upd((d) => (d.materials.cabinets.detach = v))} />
+              </div>
+            )}
             <strong>Contents in this room</strong>
             <div className="grid2">
               <Chk label="Contents present" checked={f.contents.present} onChange={(v) => upd((d) => (d.contents.present = v))} />
@@ -743,7 +770,7 @@ function Txt({ label, value, onChange }: { label: string; value: string | null; 
     </label>
   );
 }
-function Num({ label, value, onChange }: { label: string; value: number | null; onChange: (v: number | null) => void }) {
+function Num({ label, value, onChange, placeholder }: { label: string; value: number | null; onChange: (v: number | null) => void; placeholder?: string }) {
   const [s, setS] = useState(value == null ? "" : String(value));
   useEffect(() => setS(value == null ? "" : String(value)), [value]);
   return (
@@ -752,6 +779,7 @@ function Num({ label, value, onChange }: { label: string; value: number | null; 
       <input
         className="in"
         inputMode="decimal"
+        placeholder={placeholder}
         value={s}
         onChange={(e) => {
           setS(e.target.value);
@@ -799,3 +827,80 @@ function Walls({ label, value, onChange }: { label: string; value: string[]; onC
     </div>
   );
 }
+
+const CW_PRESETS: { name: string; test: RegExp; kinds: CaseworkKind[] }[] = [
+  { name: "Kitchen set", test: /kitchen|kitchenette|pantry/i, kinds: ["lower", "sink_base", "upper", "countertop", "toe_kick", "backsplash"] },
+  { name: "Vanity set", test: /bath|powder|lav|wash|half/i, kinds: ["vanity", "vanity_top", "backsplash"] },
+];
+const TOPS: CaseworkKind[] = ["countertop", "vanity_top", "backsplash"];
+const EACH: CaseworkKind[] = ["doors_drawers", "hardware"];
+const newItem = (kind: CaseworkKind): CaseworkItem => ({ kind, affected: true, action: null, extent: null, section: null, wall: null, lf: null, depthIn: null, count: null, material: null });
+
+/** Cabinets, countertops, vanity, backsplash — quick picks; blank measurements stay blank (the lines say what's missing). */
+function Casework({ roomName, items, contents, onItems, onContents }: { roomName: string; items: CaseworkItem[]; contents: CaseworkContents; onItems: (v: CaseworkItem[]) => void; onContents: (v: CaseworkContents) => void }) {
+  const [cw, setCw] = useState<Rules["casework"]>(DEFAULT_RULES.casework);
+  useEffect(() => {
+    api<{ rules: Rules }>("/api/rules")
+      .then((s) => s.rules?.casework && setCw(s.rules.casework))
+      .catch(() => {});
+  }, []);
+  const presets = [...CW_PRESETS].sort((a, b) => Number(b.test.test(roomName)) - Number(a.test.test(roomName)));
+  const add = (kinds: CaseworkKind[]) => onItems([...items, ...kinds.filter((k) => !items.some((i) => i.kind === k) || kinds.length === 1).map(newItem)]);
+  const edit = (i: number, patch: Partial<CaseworkItem>) => onItems(items.map((x, j) => (j === i ? { ...x, ...patch } : x)));
+  const baseLF = items.filter((i) => i.affected && ["lower", "sink_base", "island", "vanity"].includes(i.kind)).reduce((a, i) => (a == null || i.lf == null ? null : a + i.lf), 0 as number | null);
+  return (
+    <section aria-label="Cabinets and countertops" style={{ marginTop: 8 }}>
+      <strong>Cabinets &amp; countertops</strong>
+      <div className="row" style={{ marginTop: 4, flexWrap: "wrap", gap: 6 }}>
+        {presets.map((p) => (
+          <button key={p.name} type="button" className="btn sm" onClick={() => add(p.kinds)}>
+            + {p.name}
+          </button>
+        ))}
+      </div>
+      <div className="row" style={{ marginTop: 6, flexWrap: "wrap", gap: 6 }} aria-label="Add one item">
+        {CASEWORK_KINDS.map((k) => (
+          <button key={k} type="button" className={`btn sm ${items.some((i) => i.kind === k) ? "on" : ""}`} onClick={() => add([k])}>
+            + {CASEWORK_LABELS[k]}
+          </button>
+        ))}
+      </div>
+      {items.map((it, i) => {
+        const top = TOPS.includes(it.kind);
+        const each = EACH.includes(it.kind);
+        const defDepth = it.kind === "countertop" ? cw.countertopDepthIn : it.kind === "vanity_top" ? cw.vanityTopDepthIn : null;
+        const lfHint = it.kind === "toe_kick" && cw.toeKickEqualsBaseLF ? `= base cabinet LF${baseLF ? ` (${baseLF})` : ""}` : it.kind === "interior" ? "= affected cabinet LF" : (it.kind === "countertop" || it.kind === "vanity_top") && cw.countertopGoesWithBase && baseLF ? `base LF is ${baseLF}` : "measure (LF)";
+        return (
+          <div key={i} className="card" style={{ marginTop: 8, padding: 10 }} aria-label={CASEWORK_LABELS[it.kind]}>
+            <div className="row" style={{ justifyContent: "space-between" }}>
+              <strong className="small">{CASEWORK_LABELS[it.kind]}</strong>
+              <button type="button" className="btn sm" onClick={() => onItems(items.filter((_, j) => j !== i))} aria-label={`Remove ${CASEWORK_LABELS[it.kind]}`}>
+                Remove
+              </button>
+            </div>
+            <div className="grid2">
+              <Chk label="Affected" checked={it.affected} onChange={(v) => edit(i, { affected: v })} />
+              <Sel label="Action" value={it.action ?? ""} onChange={(v) => edit(i, { action: (v || null) as CaseworkItem["action"] })} options={[["", "— not decided (inspect / ask)"], ...CASEWORK_ACTIONS.map((a) => [a, CASEWORK_ACTION_LABELS[a]] as [string, string])]} />
+              {!each && <Num label="Length (LF)" value={it.lf} placeholder={lfHint} onChange={(v) => edit(i, { lf: v })} />}
+              {top && <Num label={it.kind === "backsplash" ? "Height (in)" : "Depth (in)"} value={it.depthIn} placeholder={defDepth != null ? `${defDepth} (company default)` : "measure"} onChange={(v) => edit(i, { depthIn: v })} />}
+              {each && <Num label="How many (EA)" value={it.count} placeholder="count them" onChange={(v) => edit(i, { count: v })} />}
+              {top && <Sel label="Material" value={it.material ?? ""} onChange={(v) => edit(i, { material: v || null })} options={[["", "— pick (not guessed)"], ...COUNTERTOP_MATERIALS.map((x) => [x, x[0].toUpperCase() + x.slice(1)] as [string, string])]} />}
+              <Sel label="Extent" value={it.extent ?? ""} onChange={(v) => edit(i, { extent: (v || null) as CaseworkItem["extent"] })} options={[["", "—"], ["full", "Full run"], ["partial", "Partial (which section)"]]} />
+              {it.extent === "partial" && <Txt label="Which section" value={it.section} onChange={(v) => edit(i, { section: v })} />}
+              <Sel label="Wall" value={it.wall ?? ""} onChange={(v) => edit(i, { wall: v || null })} options={[["", "—"], ...WALLS.map((w) => [w, `${w} wall`] as [string, string])]} />
+            </div>
+          </div>
+        );
+      })}
+      {items.length > 0 && (
+        <Sel
+          label="Cabinet contents"
+          value={contents ?? ""}
+          onChange={(v) => onContents((v || null) as CaseworkContents)}
+          options={[["", "— ask"], ["none", "Empty / none"], ["manipulate", "Move / block"], ["clean_onsite", "Clean on site"], ["packout", "Pack out"]]}
+        />
+      )}
+    </section>
+  );
+}
+type CaseworkContents = RoomScanData["materials"]["caseworkContents"];
