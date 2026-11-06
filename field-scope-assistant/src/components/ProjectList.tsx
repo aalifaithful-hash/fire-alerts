@@ -6,6 +6,7 @@ import TimeField from "./TimeField";
 import SetupBanner from "./SetupBanner";
 import { api } from "./api";
 import { useStatus } from "./useStatus";
+import DeleteAllProjects from "./DeleteAllProjects";
 import type { Project } from "@/lib/types";
 import { QUICK_JOBS, QUICK_JOB_LABELS, type QuickJob } from "@/lib/quickJobs";
 
@@ -20,6 +21,7 @@ export default function ProjectList() {
   const [form, setForm] = useState({ address: "", unit: "", customer: "", phone: "", job: "" as QuickJob | "", appointmentTime: "", notes: "" });
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
+  const [deletedAll, setDeletedAll] = useState<number | null>(null);
 
   useEffect(() => {
     const t = setTimeout(() => {
@@ -130,6 +132,11 @@ export default function ProjectList() {
             )}
           </div>
         )}
+        {deletedAll != null && (
+          <div className="card ok" role="status" style={{ marginBottom: 10 }}>
+            <strong>All projects deleted</strong> — {deletedAll} project{deletedAll === 1 ? "" : "s"} and their files, visits and drafts were removed.
+          </div>
+        )}
         {rows?.map((p) => (
           <a key={p.id} className="list-item" href={`/projects/${p.id}`}>
             <div className="row">
@@ -143,6 +150,14 @@ export default function ProjectList() {
             </div>
           </a>
         ))}
+        <DeleteAllProjects
+          listVersion={rows?.length ?? -1}
+          onDeleted={(n) => {
+            setDeletedAll(n);
+            setQ("");
+            setRows([]);
+          }}
+        />
       </main>
     </>
   );
