@@ -18,7 +18,9 @@ export default function ProjectList() {
   const [q, setQ] = useState("");
   const [rows, setRows] = useState<Row[] | null>(null);
   const [creating, setCreating] = useState(false);
-  const [form, setForm] = useState({ address: "", unit: "", customer: "", phone: "", job: "" as QuickJob | "", appointmentTime: "", notes: "" });
+  const emptyForm = () => ({ address: "", unit: "", customer: "", phone: "", job: "" as QuickJob | "", also: [] as QuickJob[], ems: false, appointmentTime: "", notes: "" });
+  // always opens blank — never carries an earlier address into a new project
+  const [form, setForm] = useState(emptyForm);
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
   const [deletedAll, setDeletedAll] = useState<{ n: number; unlinked: number } | null>(null);
@@ -56,7 +58,13 @@ export default function ProjectList() {
             <a className="btn primary big" href="/inbox">
               Paste an FNOL (new assignment)
             </a>
-            <button className="btn big" onClick={() => setCreating(true)}>
+            <button
+              className="btn big"
+              onClick={() => {
+                setForm(emptyForm());
+                setCreating(true);
+              }}
+            >
               + Quick start without an FNOL
             </button>
           </div>
@@ -65,12 +73,12 @@ export default function ProjectList() {
             <h3 style={{ marginTop: 0 }}>Quick start — no FNOL</h3>
             <label className="field">
               <span>Property address *</span>
-              <input className="in" autoFocus value={form.address} onChange={(e) => setForm({ ...form, address: e.target.value })} placeholder="123 Main St, New York, NY 10001" aria-label="Property address" />
+              <input className="in" autoFocus value={form.address} onChange={(e) => setForm({ ...form, address: e.target.value })} placeholder="Street, city, ZIP" autoComplete="off" aria-label="Property address" />
             </label>
             <div className="grid2">
               <label className="field">
                 <span>Unit</span>
-                <input className="in" value={form.unit} onChange={(e) => setForm({ ...form, unit: e.target.value })} placeholder="4D" aria-label="Unit" />
+                <input className="in" value={form.unit} onChange={(e) => setForm({ ...form, unit: e.target.value })} placeholder="Apt / unit" autoComplete="off" aria-label="Unit" />
               </label>
               <div className="field">
                 <span>Visit time</span>
@@ -78,23 +86,42 @@ export default function ProjectList() {
               </div>
               <label className="field">
                 <span>Customer</span>
-                <input className="in" value={form.customer} onChange={(e) => setForm({ ...form, customer: e.target.value })} aria-label="Customer" />
+                <input className="in" value={form.customer} onChange={(e) => setForm({ ...form, customer: e.target.value })} autoComplete="off" aria-label="Customer" />
               </label>
               <label className="field">
                 <span>Phone</span>
-                <input className="in" type="tel" value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} aria-label="Phone" />
+                <input className="in" type="tel" value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} autoComplete="off" aria-label="Phone" />
               </label>
             </div>
             <div>
               <div style={{ fontWeight: 600, fontSize: 13, color: "var(--muted)" }}>Kind of job *</div>
               <div className="row" style={{ marginTop: 6 }} role="group" aria-label="Kind of job">
                 {QUICK_JOBS.map((j) => (
-                  <button key={j} type="button" className={`btn sm ${form.job === j ? "on" : ""}`} aria-pressed={form.job === j} onClick={() => setForm({ ...form, job: j })}>
+                  <button key={j} type="button" className={`btn sm ${form.job === j ? "on" : ""}`} aria-pressed={form.job === j} onClick={() => setForm({ ...form, job: j, also: form.also.filter((x) => x !== j) })}>
                     {form.job === j ? "✓ " : ""}
                     {QUICK_JOB_LABELS[j]}
                   </button>
                 ))}
               </div>
+              {form.job && (
+                <>
+                  <div style={{ fontWeight: 600, fontSize: 13, color: "var(--muted)", marginTop: 8 }}>Also on this job (optional, pick any)</div>
+                  <div className="row" style={{ marginTop: 6, flexWrap: "wrap" }} role="group" aria-label="Also on this job">
+                    {QUICK_JOBS.filter((j) => j !== form.job).map((j) => {
+                      const on = form.also.includes(j);
+                      return (
+                        <button key={j} type="button" className={`btn sm ${on ? "on" : ""}`} aria-pressed={on} onClick={() => setForm({ ...form, also: on ? form.also.filter((x) => x !== j) : [...form.also, j] })}>
+                          {on ? "✓ " : "+ "}
+                          {QUICK_JOB_LABELS[j]}
+                        </button>
+                      );
+                    })}
+                  </div>
+                  <label className="row" style={{ marginTop: 6 }}>
+                    <input type="checkbox" checked={form.ems} onChange={(e) => setForm({ ...form, ems: e.target.checked })} aria-label="Emergency services (EMS)" /> Emergency services (EMS) — opens as an EMS initial walk-through
+                  </label>
+                </>
+              )}
             </div>
             <label className="field">
               <span>Notes (what you know so far)</span>
@@ -105,7 +132,13 @@ export default function ProjectList() {
               <button className="btn primary grow big" disabled={busy || !form.address.trim() || !form.job} onClick={create}>
                 {busy ? "Building scope…" : "Start scope"}
               </button>
-              <button className="btn ghost" onClick={() => setCreating(false)}>
+              <button
+                className="btn ghost"
+                onClick={() => {
+                  setCreating(false);
+                  setForm(emptyForm());
+                }}
+              >
                 Cancel
               </button>
             </div>

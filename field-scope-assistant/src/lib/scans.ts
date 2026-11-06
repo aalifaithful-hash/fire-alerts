@@ -104,6 +104,18 @@ function analyzeAll(recs: RoomScanRec[], locations: Location[], facts: VisitFact
     return l ? fullLabel(l) : "Room";
   };
   const quick = recs.map((r) => ({ r, floorSF: r.data.measurements.lengthFt && r.data.measurements.widthFt ? r.data.measurements.lengthFt * r.data.measurements.widthFt : null }));
+  // the crew for per-worker-per-day lines (PPE): PM-confirmed people × work days; PPE counted once, in the first mold room
+  const j = facts.jobInfo;
+  const people = j.crewChiefs != null && j.subcontractors != null ? j.crewChiefs + j.subcontractors : null;
+  const pd = Number(String(j.productionDays ?? "").match(/\d+(\.\d+)?/)?.[0] ?? NaN);
+  const moldRec = recs.find((r) => r.data.loss.type === "mold" || (r.data.loss.type == null && visitServiceLine === "mold"));
+  const crew = {
+    people,
+    label: people != null ? `CC${j.crewChiefs! > 1 ? ` ×${j.crewChiefs}` : ""}+${j.subcontractors}` : null,
+    days: Number.isFinite(pd) && pd > 0 ? pd : rules.crew.targetDays.mold,
+    daysBasis: Number.isFinite(pd) && pd > 0 ? "production days on the job info" : "company target days for mold remediation — edit Production days if different",
+    ppeRoom: moldRec ? label(moldRec.locationId) : null,
+  };
   return recs.map((rec) => {
     const runLabel = rec.data.materials.flooring.continuousRun?.trim().toLowerCase();
     const run = runLabel
@@ -125,6 +137,7 @@ function analyzeAll(recs: RoomScanRec[], locations: Location[], facts: VisitFact
       yearBuilt,
       visitServiceLine,
       report: rec.data.reportDocumentId ? (reports.get(rec.data.reportDocumentId) ?? null) : null,
+      crew,
     });
     return { rec, analysis };
   });
@@ -222,9 +235,11 @@ export async function getVisitScans(projectId: string, visitId: string): Promise
   };
   const acceptedLines = analyzed.flatMap((a) => (roomsOut.has(a.rec.locationId) ? [] : a.analysis.lines.filter((l) => l.status === "accepted").map((l) => ({ l, room: roomLabelOf(a.rec.locationId) }))));
   const failures: string[] = [];
+  // every check passes only on real evidence: nothing accepted is not "ready to send"
+  if (!acceptedLines.length) failures.push("No accepted lines yet — accept the lines that go in the scope.");
   for (const { l, room } of acceptedLines) {
     const what = `${room}: ${l.activity} ${l.item}`;
-    if (l.quantity == null && !l.unit.includes("DA")) failures.push(`${what} — no quantity`);
+    if (l.quantity == null) failures.push(`${what} — no quantity${l.unit.includes("DA") ? " (days not set)" : ""}`);
     if (!l.justification.trim()) failures.push(`${what} — no justification`);
     if (l.quantity != null && !l.source) failures.push(`${what} — no source for the quantity`);
   }
@@ -244,22 +259,32 @@ export async function getVisitScans(projectId: string, visitId: string): Promise
   for (const a of analyzed) if (a.analysis.pending.some((x) => x.startsWith("HOLD")) && !roomsOut.has(a.rec.locationId)) failures.push(`${roomLabelOf(a.rec.locationId)}: HOLD — moisture source not confirmed fixed`);
   const presend = { ok: failures.length === 0, accepted: acceptedLines.length, failures };
   const decided = allLines.filter((l) => l.status === "accepted" || l.status === "rejected").length;
+  // the room's effective loss type: what the PM set, else what the visit's kind of work implies
+  const sl = visit.serviceLine;
+  const isMold = (d: RoomScanData) => d.loss.type === "mold" || (d.loss.type == null && sl === "mold");
+  const isWater = (d: RoomScanData) => d.loss.type === "water" || d.loss.type === "sewage" || (d.loss.type == null && (d.source.waterSource != null || sl === "mitigation" || sl === "ems"));
+  const live = analyzed.filter((a) => !roomsOut.has(a.rec.locationId));
+  const waterRooms = live.filter((a) => isWater(a.rec.data));
+  const moldRooms = live.filter((a) => isMold(a.rec.data));
   const qa = [
     { ok: analyzed.length > 0, text: "At least one room scanned" },
     { ok: analyzed.every((a) => a.rec.data.source.where !== "unknown"), text: "Every room has a source or migration path" },
     { ok: analyzed.every((a) => a.analysis.takeoff.floorSF != null), text: "Every room is measured" },
-    { ok: analyzed.every((a) => a.rec.data.loss.type !== "water" || a.rec.data.loss.category != null), text: "Water category confirmed in every water room" },
+    { ok: live.every((a) => a.rec.data.loss.type != null), text: "Loss type set in every room" },
+    ...(waterRooms.length ? [{ ok: waterRooms.every((a) => a.rec.data.loss.category != null), text: "Water category confirmed in every water room" }] : []),
     { ok: allLines.filter((l) => l.status === "accepted" && /^(Remove|Flood cut)/.test(l.activity)).every((l) => !!l.justification), text: "Every accepted removal has a justification" },
-    { ok: allLines.length === 0 || decided === allLines.filter((l) => l.status !== "excluded").length, text: "Every suggested line accepted or rejected" },
-    { ok: acceptedLines.every(({ l }) => l.quantity != null || l.unit.includes("DA")), text: "Accuracy: every accepted line has a quantity" },
-    { ok: acceptedLines.every(({ l }) => !!l.justification.trim()), text: "Accuracy: every accepted line has a justification" },
+    { ok: allLines.length > 0 && decided === allLines.filter((l) => l.status !== "excluded").length, text: "Every suggested line accepted or rejected" },
+    { ok: acceptedLines.length > 0, text: acceptedLines.length ? `${acceptedLines.length} line${acceptedLines.length === 1 ? "" : "s"} accepted` : "At least one line accepted" },
+    { ok: acceptedLines.length > 0 && acceptedLines.every(({ l }) => l.quantity != null), text: "Accuracy: every accepted line has a quantity" },
+    { ok: acceptedLines.length > 0 && acceptedLines.every(({ l }) => !!l.justification.trim()), text: "Accuracy: every accepted line has a justification" },
     { ok: acceptedLines.every(({ l }) => l.quantity == null || !!l.source), text: "Accuracy: every accepted quantity has a source (report quote, measurement, company rule or PM entry)" },
     { ok: acceptedLines.every(({ l }) => l.kind !== "equipment" || l.duration?.hours != null), text: "Accuracy: every accepted equipment line states how long it runs" },
     { ok: !!crew.confirmed, text: crew.confirmed ? `Crew confirmed: ${crew.confirmed.label}` : "Crew (crew chiefs + subs) confirmed by the PM" },
     { ok: !schedule.estimated, text: "Equipment run times confirmed (none still estimated)" },
     { ok: visit.facts.exclusions.every((e) => e.signature === "signed"), text: "Exclusions have a signed customer declination" },
-    { ok: analyzed.every((a) => a.rec.data.moisturePoints.length > 0 || a.rec.data.loss.type !== "water"), text: "Moisture points mapped in water rooms" },
-    { ok: analyzed.every((a) => a.rec.data.loss.type !== "mold" || a.rec.data.source.status === "repaired" || a.rec.data.source.status === "stopped"), text: "Mold: moisture source confirmed fixed (remediation can't be finalized otherwise)" },
+    ...(waterRooms.length ? [{ ok: waterRooms.every((a) => a.rec.data.moisturePoints.length > 0), text: "Moisture points mapped in water rooms" }] : []),
+    // mold: "stopped" is not "fixed" — only a source marked repaired counts
+    ...(moldRooms.length ? [{ ok: moldRooms.every((a) => a.rec.data.source.status === "repaired"), text: "Mold: moisture source confirmed repaired (remediation can't be finalized otherwise; “stopped” is not enough)" }] : []),
   ];
 
   return {
@@ -361,13 +386,25 @@ export async function decideLines(projectId: string, visitId: string, locationId
   if (!rec) throw new repo.NotFound("Room scan not found.");
   const decisions = { ...rec.data.decisions };
   const lineNotes = { ...rec.data.lineNotes };
+  let skipped: string[] = [];
+  if (action === "accept") {
+    // a line with no quantity can't be accepted — enter the quantity (or answer its question) first
+    const current = (await getVisitScans(projectId, visitId)).rooms.find((r) => r.locationId === locationId)?.data.lines ?? [];
+    const noQty = new Set(current.filter((l) => l.quantity == null).map((l) => l.id));
+    skipped = lineIds.filter((id) => noQty.has(id));
+    if (skipped.length && skipped.length === lineIds.length) {
+      const names = current.filter((l) => skipped.includes(l.id)).map((l) => `${l.activity} ${l.item}`);
+      throw new UserError(`Enter a quantity before accepting: ${names.join("; ")}.`);
+    }
+    lineIds = lineIds.filter((id) => !noQty.has(id));
+  }
   for (const id of lineIds) {
     if (action === "reset") delete decisions[id];
     else decisions[id] = action === "accept" ? "accepted" : "rejected";
     if (action !== "reset") delete lineNotes[id]; // the PM has now decided on the changed line
   }
   await writeScan(projectId, visitId, locationId, { ...rec.data, decisions, lineNotes });
-  await persistAndSync(projectId, visitId, `${action === "accept" ? "Accepted" : action === "reject" ? "Rejected" : "Reset"} ${lineIds.length} line(s).`);
+  await persistAndSync(projectId, visitId, `${action === "accept" ? "Accepted" : action === "reject" ? "Rejected" : "Reset"} ${lineIds.length} line(s).${skipped.length ? ` ${skipped.length} left suggested — no quantity yet.` : ""}`);
   return getVisitScans(projectId, visitId);
 }
 

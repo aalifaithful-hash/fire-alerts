@@ -1,5 +1,6 @@
 "use client";
 import { useCallback, useEffect, useState } from "react";
+import { addressWithUnit } from "@/lib/addressUnit";
 import { useRouter } from "next/navigation";
 import Header from "./Header";
 import { api } from "./api";
@@ -43,8 +44,7 @@ export default function PropertyView({ propertyId }: { propertyId: string }) {
       <Header crumb={p.address} />
       <main className="page">
         <h1 style={{ fontSize: 22 }}>
-          {p.address}
-          {p.unit ? `, Unit ${p.unit}` : ""}
+          {addressWithUnit(p.address, p.unit)}
         </h1>
         <div className="card stack" style={{ marginTop: 10 }}>
           <div className="grid2">

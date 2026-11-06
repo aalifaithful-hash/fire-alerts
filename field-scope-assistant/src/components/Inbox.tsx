@@ -1,5 +1,6 @@
 "use client";
 import { useEffect, useRef, useState } from "react";
+import { addressWithUnit } from "@/lib/addressUnit";
 import { useRouter } from "next/navigation";
 import Header from "./Header";
 import { api } from "./api";
@@ -236,8 +237,7 @@ export default function Inbox() {
             )}
             {res.matchedProperty && (
               <div className="card" style={{ marginTop: 10 }}>
-                <strong>Existing property:</strong> {res.matchedProperty.address}
-                {res.matchedProperty.unit ? `, Unit ${res.matchedProperty.unit}` : ""} — this FNOL will be added as a new assignment.
+                <strong>Existing property:</strong> {addressWithUnit(res.matchedProperty.address, res.matchedProperty.unit)} — this FNOL will be added as a new assignment.
                 <ul className="small" style={{ paddingLeft: 18, marginTop: 6 }}>
                   {res.propertyHistory.map((h) => (
                     <li key={h.id}>
@@ -310,6 +310,8 @@ export default function Inbox() {
                 {field("lossDate", "Date of loss", "lossDate", "date")}
                 {field("lossType", "Loss type", "lossType")}
                 {field("receivedAt", "Received (starts deadlines)", "receivedAt")}
+                {field("appointmentDate", "Visit date", "appointment", "date")}
+                {field("appointmentTime", "Visit time", "appointment", "time")}
               </div>
               <label className="field">
                 <span>
@@ -335,8 +337,7 @@ export default function Inbox() {
           <div key={a.id} className="list-item">
             <div className="row">
               <a className="t grow" href={a.property ? `/properties/${a.property.id}` : "#"}>
-                {a.property?.address ?? "?"}
-                {a.property?.unit ? `, Unit ${a.property.unit}` : ""}
+                {a.property ? addressWithUnit(a.property.address, a.property.unit) : "?"}
               </a>
               <span className={`chip ${a.status === "new" ? "amber" : a.status === "linked" ? "green" : ""}`}>{a.status}</span>
               {a.special && <span className="chip red">special</span>}

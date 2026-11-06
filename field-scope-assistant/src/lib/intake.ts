@@ -1,4 +1,5 @@
 import { query, queryOne } from "./db";
+import { addressWithUnit } from "./addressUnit";
 import { DEFAULT_RULES, mergeRules, validateSection, type Rules, type RulesSection } from "./defaults";
 import { addressKey, outputTypeFor, SERVICE_LINES, VISIT_STAGES, type FnolParse, type ServiceLine, type VisitStage } from "./fnol";
 import { newId } from "./ids";
@@ -168,6 +169,9 @@ export interface Assignment {
   lossType: string | null;
   causeOfLoss: string | null;
   receivedAt: string;
+  /** Scheduled visit from the FNOL (YYYY-MM-DD / HH:MM), when stated. */
+  appointmentDate: string | null;
+  appointmentTime: string | null;
   rawText: string;
   status: "new" | "accepted" | "linked" | "closed";
   history: AssignmentEvent[];
@@ -179,7 +183,7 @@ type AssignmentRow = {
   special: number; special_reason: string | null; program: string | null; claim_number: string | null;
   assignment_number: string | null; policy_number: string | null; carrier: string | null; insured: string | null;
   contact_phone: string | null; email: string | null; loss_date: string | null; loss_type: string | null;
-  cause_of_loss: string | null; received_at: string; raw_text: string; status: string; history: string;
+  cause_of_loss: string | null; received_at: string; raw_text: string; parsed?: string | null; status: string; history: string;
   created_at: string; updated_at: string;
 };
 const toAssignment = (r: AssignmentRow): Assignment => ({
@@ -203,6 +207,8 @@ const toAssignment = (r: AssignmentRow): Assignment => ({
   lossType: r.loss_type,
   causeOfLoss: r.cause_of_loss,
   receivedAt: r.received_at,
+  appointmentDate: safeJson<{ appointmentDate?: string | null }>(r.parsed ?? "{}", {}).appointmentDate ?? null,
+  appointmentTime: safeJson<{ appointmentTime?: string | null }>(r.parsed ?? "{}", {}).appointmentTime ?? null,
   rawText: r.raw_text,
   status: r.status as Assignment["status"],
   history: safeJson<AssignmentEvent[]>(r.history, []),
@@ -231,6 +237,9 @@ export interface AssignmentInput {
   lossType: string | null;
   causeOfLoss: string | null;
   receivedAt: string | null;
+  /** Scheduled visit (YYYY-MM-DD / HH:MM) — sets the visit's date and appointment time. */
+  appointmentDate?: string | null;
+  appointmentTime?: string | null;
 }
 
 /** Parser output → editable form values (PM reviews before saving). */
@@ -255,6 +264,8 @@ export function parseToInput(p: FnolParse): AssignmentInput {
     lossType: p.lossType?.value ?? null,
     causeOfLoss: p.causeOfLoss?.value ?? null,
     receivedAt: p.receivedAt?.value ?? null,
+    appointmentDate: p.appointment?.value.date ?? null,
+    appointmentTime: p.appointment?.value.time ?? null,
   };
 }
 
@@ -286,6 +297,16 @@ function clean(input: AssignmentInput): AssignmentInput {
     lossType: s(input.lossType, 40),
     causeOfLoss: s(input.causeOfLoss, 2000),
     receivedAt: s(input.receivedAt, 30),
+    appointmentDate: (() => {
+      const d = s(input.appointmentDate, 10);
+      if (d && !/^\d{4}-\d{2}-\d{2}$/.test(d)) throw new IntakeError("Visit date must be YYYY-MM-DD.");
+      return d;
+    })(),
+    appointmentTime: (() => {
+      const t = s(input.appointmentTime, 5);
+      if (t && !/^\d{1,2}:\d{2}$/.test(t)) throw new IntakeError("Visit time must be HH:MM.");
+      return t ? t.padStart(5, "0") : null;
+    })(),
   };
 }
 
@@ -312,7 +333,7 @@ export async function createAssignmentFromFnol(rawText: string, inputIn: Assignm
     VALUES (${id}, ${property.id}, NULL, ${JSON.stringify(input.serviceLines)}, ${input.contentsOnly ? 1 : 0}, ${input.stage},
       ${input.special ? 1 : 0}, ${input.specialReason}, ${input.program}, ${input.claimNumber}, ${input.assignmentNumber},
       ${input.policyNumber}, ${input.carrier}, ${input.insured}, ${input.contactPhone}, ${input.email}, ${input.lossDate},
-      ${input.lossType}, ${input.causeOfLoss}, ${received}, ${rawText.slice(0, 20000)}, '{}', 'new', ${JSON.stringify(history)}, ${now}, ${now})`;
+      ${input.lossType}, ${input.causeOfLoss}, ${received}, ${rawText.slice(0, 20000)}, ${JSON.stringify({ appointmentDate: input.appointmentDate ?? null, appointmentTime: input.appointmentTime ?? null })}, 'new', ${JSON.stringify(history)}, ${now}, ${now})`;
   await query`UPDATE properties SET updated_at = ${now} WHERE id = ${property.id}`;
   return { assignment: await getAssignment(id), property, propertyCreated: created };
 }
@@ -404,8 +425,8 @@ export async function openProjectForAssignment(id: string, opts: { projectId?: s
   if (projectId) await repo.getProject(projectId);
   else {
     const p = await repo.createProject({
-      name: [property.address, property.unit ? `Unit ${property.unit}` : null].filter(Boolean).join(", "),
-      address: [property.address, property.unit && !property.address.includes(property.unit) ? `Unit ${property.unit}` : null].filter(Boolean).join(", "),
+      name: addressWithUnit(property.address, property.unit),
+      address: addressWithUnit(property.address, property.unit),
       customer: a.insured,
       contact: a.contactPhone,
       lossDate: a.lossDate,
@@ -420,10 +441,12 @@ export async function openProjectForAssignment(id: string, opts: { projectId?: s
   const type = outputTypeFor(a.serviceLines, a.stage, a.contentsOnly);
   const visit = await repo.createVisit(projectId, {
     type,
-    visitDate: todayNY(),
+    visitDate: a.appointmentDate ?? todayNY(),
     stage: a.stage,
     serviceLine: a.serviceLines[0] ?? null,
   });
+  // the FNOL's scheduled visit time (when stated) becomes the visit's appointment time
+  if (a.appointmentTime) await repo.updateVisitFields(projectId, visit.id, { appointmentTime: a.appointmentTime });
   await pushHistory(id, { kind: a.projectId ? "visit_created" : "linked", text: `${a.projectId ? "Visit started" : "Project opened"}: ${type.replace(/_/g, " ")}` }, {
     status: "linked",
     projectId,

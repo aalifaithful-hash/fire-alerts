@@ -30,6 +30,10 @@ export interface QuickStartInput {
   customer?: string | null;
   phone?: string | null;
   job: QuickJob;
+  /** More kinds of work on the same job (e.g. Water + Mold) — each becomes a service line on the assignment. */
+  also?: QuickJob[];
+  /** Emergency services (EMS) first — the visit opens as an EMS initial walk-through. */
+  ems?: boolean;
   appointmentTime?: string | null; // HH:MM 24h
   notes?: string | null;
 }
@@ -102,8 +106,10 @@ export async function quickStart(input: QuickStartInput) {
   const notes = (input.notes ?? "").trim();
   const unit = input.unit?.trim() || null;
 
+  const also = (Array.isArray(input.also) ? input.also : []).filter((j): j is QuickJob => (QUICK_JOBS as readonly string[]).includes(j) && j !== input.job);
+  const serviceLines = [...new Set<ServiceLine>([...(input.ems ? (["ems"] as ServiceLine[]) : []), ...LINES[input.job], ...also.flatMap((j) => LINES[j])])];
   const a: AssignmentInput = {
-    serviceLines: LINES[input.job],
+    serviceLines,
     contentsOnly: input.job === "contents",
     stage: "initial_walkthrough",
     special: false,

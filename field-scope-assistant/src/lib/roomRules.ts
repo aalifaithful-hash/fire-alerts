@@ -26,6 +26,8 @@ export interface RoomContext {
   visitServiceLine?: string | null;
   /** Findings of the mold report applied to this room (rules analyzer output). */
   report?: ReportFindings | null;
+  /** The visit's crew (for per-worker-per-day lines such as PPE). people = null until the PM confirms the crew. */
+  crew?: { people: number | null; label: string | null; days: number; daysBasis: string; ppeRoom: string | null };
 }
 
 export interface RoomAnalysis {
@@ -427,7 +429,28 @@ export function analyzeRoom(scanIn: RoomScanData, ctx: RoomContext): RoomAnalysi
       moldAdd({ id: "mold.negair", ruleId: "mold.negativeAir", kind: "equipment", scopeCategory: "containment", activity: "Set (calculated)", item: "HEPA negative air machine, exhausted outside the containment", quantity: MR.negativeAirPerContainment, unit: "EA", calc: `${MR.negativeAirPerContainment} per containment`, justification: "Keeps the containment under negative pressure during removal and cleaning." });
     if (MR.dehumidifierPerContainment > 0 && !sharedOther && !noCont)
       moldAdd({ id: "mold.dehu", ruleId: "mold.dehumidifier", kind: "equipment", scopeCategory: "drying", activity: "Set (calculated)", item: "dehumidifier to hold RH below 50% in the containment", quantity: MR.dehumidifierPerContainment, unit: "EA", calc: `${MR.dehumidifierPerContainment} per containment`, justification: "Growth needs moisture; dry the remaining structure before closing up." });
-    moldAdd({ id: "mold.ppe", ruleId: "mold.ppe", kind: "mitigation", scopeCategory: "containment", activity: "Provide", item: MR.ppeDescription, quantity: null, unit: "EA/worker/day", calc: "1 set per worker per entry — crew size and days not set", justification: "Worker protection during mold removal (S520)." });
+    {
+      // PPE: 1 set per worker per day for the job — from the confirmed crew × work days, counted once (in one mold room)
+      const cr = ctx.crew;
+      const here = !cr?.ppeRoom || cr.ppeRoom === room;
+      const qty = cr?.people != null && here ? cr.people * cr.days : here ? null : 0;
+      moldAdd({
+        id: "mold.ppe",
+        ruleId: "mold.ppe",
+        kind: "mitigation",
+        scopeCategory: "containment",
+        activity: "Provide",
+        item: MR.ppeDescription,
+        quantity: qty,
+        unit: "EA/worker/day",
+        calc: !here
+          ? `counted once for the job in ${cr!.ppeRoom}`
+          : cr?.people != null
+            ? `${cr.people} on the crew (${cr.label}, PM confirmed) × ${cr.days} day${cr.days === 1 ? "" : "s"} (${cr.daysBasis}) = ${qty} sets`
+            : `1 set per worker per day — confirm the crew at the top of the scan (people × ${cr?.days ?? "?"} days${cr ? `, ${cr.daysBasis}` : ""})`,
+        justification: "Worker protection during mold removal (S520).",
+      });
+    }
     if (moldFloorOut) {
       const what = `${m.flooring.type || "flooring"} with growth`;
       moldAdd({ id: "mold.floor.remove", ruleId: "mold.removeWhenGrowth", kind: "mitigation", scopeCategory: "removal", activity: "Remove & bag", item: what, quantity: affFloorSF, unit: "SF", calc: floorCalc, justification: `Mold under the ${m.flooring.type || "flooring"}: porous/semi-porous material with growth is removed, not cleaned (S520).` });
@@ -571,6 +594,43 @@ export function analyzeRoom(scanIn: RoomScanData, ctx: RoomContext): RoomAnalysi
     const rank = (d: Draft) => (d.kind === "reconstruction" ? 1000 : seq.indexOf(d.id) === -1 ? 500 : seq.indexOf(d.id));
     drafts.sort((a, b) => rank(a) - rank(b));
   }
+  // ---------------- installed equipment (counted on site) governs ----------------
+  // The calculated count is a suggestion; what the PM placed is what runs. When they differ the
+  // installed count is used and the difference is flagged; installed equipment with no line gets one.
+  const EQ_LABEL = { air_mover: "air movers", dehumidifier: "dehumidifier", air_scrubber: "HEPA air scrubber" } as const;
+  for (const kind of ["air_mover", "dehumidifier", "air_scrubber"] as const) {
+    const placed = scan.equipmentPlaced.filter((e) => e.kind === kind).reduce((a, e) => a + e.qty, 0);
+    if (!placed) continue;
+    const ids = kind === "air_mover" ? ["equip.airmovers"] : kind === "air_scrubber" ? ["mold.negair", "equip.scrubber"] : ["mold.dehu"];
+    const di = drafts.findIndex((d) => ids.includes(d.id));
+    if (di >= 0) {
+      const d = drafts[di];
+      if (d.quantity === placed) {
+        drafts[di] = { ...d, activity: "Set (installed)", calc: `${placed} installed (counted on site) — matches the calculated count: ${d.calc}` };
+      } else {
+        drafts[di] = {
+          ...d,
+          activity: "Set (installed)",
+          quantity: placed,
+          calc: `${placed} installed (counted on site); calculated ${d.quantity ?? "—"}: ${d.calc}`,
+          flags: [...(d.flags ?? []), `Installed count (${placed}) differs from the calculated count (${d.quantity ?? "none"}) — the installed count is used in the scope and equipment-days; confirm it.`],
+        };
+      }
+    } else
+      drafts.push({
+        id: kind === "dehumidifier" ? "equip.dehu" : `equip.installed.${kind}`,
+        ruleId: "equipment.installed",
+        kind: "equipment",
+        scopeCategory: "drying",
+        activity: "Set (installed)",
+        item: EQ_LABEL[kind],
+        quantity: placed,
+        unit: "EA",
+        calc: `${placed} installed (counted on site)`,
+        justification: "Equipment placed on site — counted by the PM.",
+      });
+  }
+
   // ---------------- equipment run time ----------------
   // Report-stated run time wins; otherwise the loss-type default (ESTIMATED); otherwise missing — never silently filled.
   const ED = R.equipmentDuration;
@@ -580,10 +640,10 @@ export function analyzeRoom(scanIn: RoomScanData, ctx: RoomContext): RoomAnalysi
   const missingRun = (why: string): Base => ({ hours: null, source: null, estimated: true, basis: why, startStop: null });
   const baseDuration = (d: Draft): Base | null => {
     if (d.kind !== "equipment") return null;
-    if (d.id === "mold.negair" || d.id === "mold.dehu") {
+    if (mold && (d.id === "mold.negair" || d.id === "mold.dehu" || d.id.startsWith("equip."))) {
       const scrH = scan.containmentArea?.scrubber?.hours ?? null;
       const q = ctx.report?.airScrubber;
-      if (scrH && d.id === "mold.negair")
+      if (scrH && (d.id === "mold.negair" || d.id === "equip.installed.air_scrubber"))
         return { hours: scrH, source: "report", estimated: false, basis: `stated by the report${q ? ` (p.${q.page}: “${q.quote}”)` : ""}`, startStop: `Start when the containment is set up; run ${scrH} h.${offText}` };
       if (scrH)
         return { hours: scrH, source: "report", estimated: true, basis: `runs with the containment's air scrubber (report: ${scrH} h) — the report doesn't give the dehumidifier its own run time`, startStop: `Runs with the containment.${offText}` };
@@ -591,7 +651,7 @@ export function analyzeRoom(scanIn: RoomScanData, ctx: RoomContext): RoomAnalysi
         return { hours: ED.moldContainmentHours, source: "rule", estimated: true, basis: `company default for a mold containment (${ED.moldContainmentHours} h) — no run time in the report`, startStop: `Start when the containment is set up; run until remediation is complete.${offText}` };
       return missingRun("no run time in the report and no company default");
     }
-    if (water && (d.id === "equip.airmovers" || d.id === "equip.scrubber")) {
+    if (water && d.id.startsWith("equip.")) {
       const cls = scan.loss.waterClass;
       const days = (cls ? ED.waterDryingDaysByClass[cls] : undefined) ?? ED.waterDryingDaysClassUnknown;
       if (days == null) return missingRun("no drying-days default for this water class — enter the expected drying days");
@@ -603,7 +663,7 @@ export function analyzeRoom(scanIn: RoomScanData, ctx: RoomContext): RoomAnalysi
         startStop: `Start at setup; stop when every moisture point meets its dry goal (readings ${scan.moisturePoints.length ? `on ${scan.moisturePoints.length} mapped point${scan.moisturePoints.length === 1 ? "" : "s"}` : "— map moisture points"}).`,
       };
     }
-    if (fireSmoke && d.id === "equip.scrubber")
+    if (fireSmoke && (d.id === "equip.scrubber" || d.id === "equip.installed.air_scrubber"))
       return ED.fireSmokeScrubberDays
         ? { hours: ED.fireSmokeScrubberDays * 24, source: "rule", estimated: true, basis: `company default for fire/smoke air scrubbing (${ED.fireSmokeScrubberDays} days)`, startStop: "Start at setup; run through cleaning until odor/particulate is controlled." }
         : missingRun("no fire/smoke air-scrubbing duration in the company defaults — enter the expected run time");
@@ -624,7 +684,7 @@ export function analyzeRoom(scanIn: RoomScanData, ctx: RoomContext): RoomAnalysi
     if (d.kind === "reconstruction" && !ctx.reconstructionRequested && status !== "excluded")
       flags.push("Pending reconstruction — not estimated unless a reconstruction estimate is requested.");
     if (d.quantity == null && d.unit !== "DA" && !d.unit.includes("/")) flags.push("Quantity needs measurements.");
-    if (d.unit.includes("/")) flags.push("Set crew size and days.");
+    if (d.unit.includes("/") && d.quantity == null) flags.push("Set crew size and days — confirm the crew at the top of the scan (or enter the quantity).");
     if (scan.lineNotes[d.id]) flags.push(scan.lineNotes[d.id]);
     if (mold && (scan.source.status === "active" || (!!scan.source.hold && scan.source.status !== "repaired" && scan.source.status !== "stopped")) && d.kind !== "reconstruction" && !flags.some((f) => f.startsWith("HOLD")))
       flags.push("HOLD — the moisture source is not fixed: don't start until it is repaired and the materials are dry.");
@@ -633,7 +693,9 @@ export function analyzeRoom(scanIn: RoomScanData, ctx: RoomContext): RoomAnalysi
         ? null
         : ov != null
           ? "pm"
-          : /stated by the report|\(report\)|named in the report/.test(d.calc)
+          : /installed \(counted on site\)/.test(d.calc)
+            ? "measured"
+            : /stated by the report|\(report\)|named in the report/.test(d.calc)
             ? "report"
             : /not measured|not stated|not confirmed|no quantity/i.test(d.calc)
               ? null

@@ -1,5 +1,5 @@
 "use client";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import ReportPanel from "./ReportPanel";
 import { api } from "./api";
 import { locLabel } from "./labels";
@@ -66,7 +66,27 @@ export default function ScanTab({ ws, projectId, visitId, reload, flash }: Props
   const [err, setErr] = useState("");
   const [mode, setMode] = useState<"pm" | "estimator" | "crew">("pm");
   const [newRoom, setNewRoom] = useState({ floor: "", unit: "", room: "" });
+  const [autosave, setAutosave] = useState<"" | "saving" | "saved">("");
+  const verRef = useRef(0);
+  const latestRef = useRef<{ sel: string | null; form: Editable; dirty: boolean }>({ sel: null, form: blank(), dirty: false });
   const base = `/api/projects/${projectId}/visits/${visitId}`;
+  useEffect(() => {
+    latestRef.current = { sel, form, dirty };
+  }, [sel, form, dirty]);
+  const flush = useCallback(() => {
+    const L = latestRef.current;
+    if (!L.dirty || !L.sel || !visitId) return;
+    latestRef.current = { ...L, dirty: false };
+    void fetch(`${base}/scans/${L.sel}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ data: L.form }), keepalive: true }).catch(() => {});
+  }, [base, visitId]);
+  useEffect(() => {
+    const onHide = () => flush();
+    window.addEventListener("pagehide", onHide);
+    return () => {
+      window.removeEventListener("pagehide", onHide);
+      flush(); // the tab is closing (e.g. Settings / Scope): keep the edits
+    };
+  }, [flush]);
 
   const load = useCallback(async () => {
     if (!visitId) return;
@@ -95,6 +115,8 @@ export default function ScanTab({ ws, projectId, visitId, reload, flash }: Props
       setForm(rest);
     } else setForm(blank());
     setDirty(false);
+    // leaving this room (or the tab) with unsaved edits: save them, never drop them
+    return () => flush();
     // only when switching rooms
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sel]);
@@ -109,7 +131,6 @@ export default function ScanTab({ ws, projectId, visitId, reload, flash }: Props
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [serverData]);
 
-  if (!visitId) return <div className="card">Start a visit on the Scope tab first, then scan its rooms here.</div>;
 
   const run = async (label: string, fn: () => Promise<VisitScanView | void>) => {
     setBusy(label);
@@ -130,8 +151,30 @@ export default function ScanTab({ ws, projectId, visitId, reload, flash }: Props
       f(next);
       return next;
     });
+    verRef.current++;
     setDirty(true);
   };
+  // Autosave: edits are saved 1.5 s after the last change, and flushed when the room, tab or page changes.
+  useEffect(() => {
+    if (!dirty || !sel || !visitId) return;
+    const t = setTimeout(() => {
+      const v0 = verRef.current;
+      setAutosave("saving");
+      api<VisitScanView>(`${base}/scans/${sel}`, { method: "PUT", body: { data: form } })
+        .then((v) => {
+          setView(v);
+          if (verRef.current === v0) setDirty(false);
+          setAutosave("saved");
+          void reload();
+        })
+        .catch((e) => {
+          setAutosave("");
+          setErr(`Not saved yet: ${(e as Error).message}`);
+        });
+    }, 1500);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [form, dirty, sel, visitId, base]);
   const save = () =>
     run("save", async () => {
       const v = await api<VisitScanView>(`${base}/scans/${sel}`, { method: "PUT", body: { data: form } });
@@ -165,6 +208,7 @@ export default function ScanTab({ ws, projectId, visitId, reload, flash }: Props
       return v;
     });
 
+  if (!visitId) return <div className="card">Start a visit on the Scope tab first, then scan its rooms here.</div>;
   const f = form;
   const m = f.materials;
   const water = f.loss.type === "water" || f.loss.type === "sewage";
@@ -263,7 +307,7 @@ export default function ScanTab({ ws, projectId, visitId, reload, flash }: Props
             <strong>Walls and baseboard</strong>
             <div className="grid2">
               <Sel label="Wall material" value={m.walls.material ?? ""} onChange={(v) => upd((d) => (d.materials.walls.material = (v || null) as Editable["materials"]["walls"]["material"]))} options={[["", "—"], ["drywall", "Drywall"], ["plaster", "Plaster"], ["paneling", "Paneling"], ["tile", "Tile"], ["other", "Other"]]} />
-              <Num label='Wet height / wicking (in)' value={m.walls.wetHeightIn} onChange={(v) => upd((d) => (d.materials.walls.wetHeightIn = v))} />
+              <Num label={f.loss.type === "mold" ? "Growth height on the wall (in) — sets the drywall cut" : "Wet height / wicking (in) — sets the flood cut"} value={m.walls.wetHeightIn} onChange={(v) => upd((d) => (d.materials.walls.wetHeightIn = v))} />
             </div>
             <Walls label="Affected walls" value={m.walls.affectedWalls} onChange={(v) => upd((d) => (d.materials.walls.affectedWalls = v))} />
             <div className="grid2">
@@ -387,6 +431,9 @@ export default function ScanTab({ ws, projectId, visitId, reload, flash }: Props
           <button className="btn primary big" style={{ marginTop: 12 }} disabled={busy === "save"} onClick={save}>
             {busy === "save" ? "Saving…" : dirty ? "6. Save room and analyze" : "6. Re-analyze room"}
           </button>
+          <div className="small muted" aria-live="polite" data-testid="autosave">
+            {dirty ? "Unsaved changes — saving automatically…" : autosave === "saving" ? "Saving…" : autosave === "saved" ? "✓ Changes saved automatically" : "Changes save automatically."}
+          </div>
 
           {/* 7. Proposed lines */}
           {room && (
@@ -418,8 +465,8 @@ export default function ScanTab({ ws, projectId, visitId, reload, flash }: Props
                 </div>
               )}
               {lines.some((l) => l.status === "suggested") && (
-                <button className="btn sm" disabled={!!busy} onClick={() => decide(lines.filter((l) => l.status === "suggested" && (l.kind !== "reconstruction" || recon)).map((l) => l.id), "accept")}>
-                  Accept all suggested{recon ? "" : " (mitigation, contents, equipment)"}
+                <button className="btn sm" disabled={!!busy} onClick={() => decide(lines.filter((l) => l.status === "suggested" && l.quantity != null && (l.kind !== "reconstruction" || recon)).map((l) => l.id), "accept")}>
+                  Accept all suggested with a quantity{recon ? "" : " (mitigation, contents, equipment)"}
                 </button>
               )}
               {(["mitigation", "contents", "equipment", "monitoring", "reconstruction"] as const).map((k) => {
@@ -591,8 +638,8 @@ function LineRow({ line: l, onDecide, onQuantity, onDuration, disabled }: { line
       {l.status !== "excluded" && (
         <div className="row" style={{ marginTop: 6 }}>
           {l.status !== "accepted" && (
-            <button className="btn sm green" disabled={disabled} onClick={() => onDecide("accept")}>
-              Accept
+            <button className="btn sm green" disabled={disabled || l.quantity == null} title={l.quantity == null ? "Enter a quantity first" : undefined} onClick={() => onDecide("accept")}>
+              {l.quantity == null ? "Accept (needs a quantity)" : "Accept"}
             </button>
           )}
           {l.status !== "rejected" && (
@@ -1007,9 +1054,15 @@ function CrewAndEquipment({ view, busy, onCrew }: { view: VisitScanView; busy: b
         ))}
       </div>
       <div className="row">
-        <button className="btn sm" disabled={busy || cc == null || cc < 1 || subs == null || subs < 0} onClick={() => onCrew({ crewChiefs: cc, subcontractors: subs, trades })}>
-          Save crew
-        </button>
+        {(() => {
+          const base = c.confirmed ?? (c.proposed ? { crewChiefs: c.proposed.crewChiefs, subs: c.proposed.subs, trades: c.trades.map((t) => t.trade) } : null);
+          const edited = !base || cc !== base.crewChiefs || subs !== base.subs || [...trades].sort().join(",") !== [...base.trades].sort().join(",");
+          return edited ? (
+            <button className="btn sm" disabled={busy || cc == null || cc < 1 || subs == null || subs < 0} onClick={() => onCrew({ crewChiefs: cc, subcontractors: subs, trades })}>
+              Save edited crew{cc != null && subs != null ? ` (CC${cc > 1 ? ` ×${cc}` : ""}+${subs})` : ""}
+            </button>
+          ) : null;
+        })()}
         {c.confirmed && (
           <button className="btn sm ghost" disabled={busy} onClick={() => onCrew(null)}>
             Back to the proposal

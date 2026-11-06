@@ -55,6 +55,8 @@ export interface FnolParse {
   lossType: Found<string> | null;
   causeOfLoss: Found<string> | null;
   receivedAt: Found<string> | null; // ISO, when stated in the FNOL
+  /** Scheduled visit ("Visit: 11/06/2026 10:00 AM") — date YYYY-MM-DD and time HH:MM when stated. */
+  appointment: Found<{ date: string | null; time: string | null }> | null;
   /** Generic fallback: "Key: value" lines whose key isn't a known field (kept for review, saved with the raw text). */
   otherFields: { label: string; value: string }[];
   /** Lines that fed no field. "keywords" = read only for service-line/stage/loss cues; "unused" = not read at all. */
@@ -428,12 +430,14 @@ export function parseFnol(rawText: string, rules: Rules = DEFAULT_RULES): FnolPa
       lossType = { value: name, confidence: typeOfLoss ? "labeled" : "keyword", evidence: typeOfLoss?.evidence ?? (lossHay.match(re)?.[0] ?? name) };
       break;
     }
-  let causeOfLoss = labeled(text, [...LABELS.cause], 400);
-  // "Type of Loss: Water - supply line burst under kitchen sink" carries the cause after the peril word.
+  // Cause of loss: an explicit cause/description label first; then the cause carried on the loss-type line
+  // ("Type of Loss: Water - supply line burst under kitchen sink"); a free "Notes:" / "Details:" line only last.
+  let causeOfLoss = labeled(text, ["cause of loss", "cause", "loss description", "description of loss", "description"], 400);
   if (!causeOfLoss && typeOfLoss) {
     const rest = typeOfLoss.value.replace(/^[A-Za-z /&]+?\s*[-–—:,(]\s*/, "").replace(/\)\s*$/, "").trim();
     if (rest && rest !== typeOfLoss.value && rest.split(/\s+/).length >= 2) causeOfLoss = { value: rest, confidence: "keyword", evidence: typeOfLoss.evidence };
   }
+  if (!causeOfLoss) causeOfLoss = labeled(text, ["notes", "details"], 400);
 
   const recRaw = labeled(text, [...LABELS.received], 60);
   let receivedAt: Found<string> | null = null;
@@ -445,6 +449,21 @@ export function parseFnol(rawText: string, rules: Rules = DEFAULT_RULES): FnolPa
       if (tm?.[3]) h = (h % 12) + (/pm/i.test(tm[3]) ? 12 : 0);
       receivedAt = { ...recRaw, value: `${d}T${String(h).padStart(2, "0")}:${tm ? tm[2] : "00"}:00` };
     }
+  }
+
+  // scheduled visit: "Visit: 11/06/2026 10:00 AM", "Appointment: 11/6 at 2:30 pm", "Scheduled: …"
+  let appointment: FnolParse["appointment"] = null;
+  const apRaw = labeled(text, ["visit date", "visit time", "visit", "appointment date", "appointment time", "appointment", "scheduled", "scheduled for", "inspection date"], 80);
+  if (apRaw) {
+    const d = normalizeDate(apRaw.value);
+    const tm = apRaw.value.match(/\b(\d{1,2})(?::(\d{2}))?\s*(am|pm|a\.m\.|p\.m\.)\b/i) ?? apRaw.value.match(/\b(\d{1,2}):(\d{2})\b/);
+    let time: string | null = null;
+    if (tm) {
+      let h = +tm[1];
+      if (tm[3]) h = (h % 12) + (/p/i.test(tm[3]) ? 12 : 0);
+      if (h >= 0 && h < 24) time = `${String(h).padStart(2, "0")}:${tm[2] ?? "00"}`;
+    }
+    if (d || time) appointment = { value: { date: d, time }, confidence: "labeled", evidence: apRaw.evidence };
   }
 
   // ---------- what was not read (shown highlighted on the review screen) ----------
@@ -498,6 +517,7 @@ export function parseFnol(rawText: string, rules: Rules = DEFAULT_RULES): FnolPa
     lossType,
     causeOfLoss,
     receivedAt,
+    appointment,
     warnings,
   };
 }

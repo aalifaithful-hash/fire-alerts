@@ -254,8 +254,8 @@ function drawRoom(P: Prim[], room: SketchRoom, x: number, y: number, w: number, 
   });
 
   // equipment placed by the PM (calculated suggestions are labeled as such)
-  const placed = scan.equipmentPlaced.map((e) => `${e.kind === "air_mover" ? "AM" : e.kind === "dehumidifier" ? "DH" : "AS"}×${e.qty}`);
-  const calc = lines.filter((l) => l.kind === "equipment" && l.status === "accepted").map((l) => `${l.item.includes("scrubber") ? "AS" : "AM"}×${l.quantity} calc`);
+  const placed = scan.equipmentPlaced.map((e) => `${e.kind === "air_mover" ? "AM" : e.kind === "dehumidifier" ? "DH" : "AS"}×${e.qty} installed`);
+  const calc = lines.filter((l) => l.kind === "equipment" && l.status === "accepted").map((l) => `${l.item.includes("scrubber") ? "AS" : /dehumid/i.test(l.item) ? "DH" : "AM"}×${l.quantity} calculated`);
   const eq = placed.length ? placed : calc;
   if (eq.length) P.push({ t: "text", x: x + w - 12, y: y + 32, text: eq.join("  "), size: 10, fill: COLORS.text, anchor: "end", bold: true });
 }

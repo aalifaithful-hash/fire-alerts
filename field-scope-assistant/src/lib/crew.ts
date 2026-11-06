@@ -209,6 +209,9 @@ const TYPE_OF: Record<string, string> = {
   "equip.scrubber": "HEPA air scrubber",
   "mold.dehu": "Dehumidifier (containment)",
   "equip.airmovers": "Air movers",
+  "equip.installed.air_mover": "Air movers",
+  "equip.installed.air_scrubber": "HEPA air scrubber",
+  "equip.dehu": "Dehumidifiers (water drying)",
 };
 
 export function equipmentSchedule(
@@ -240,7 +243,12 @@ export function equipmentSchedule(
       r.basis.push(b);
       if (d?.startStop && !r.startStop.includes(d.startStop)) r.startStop.push(d.startStop);
     }
-  if (o.waterDehu) {
+  const installedDehu = map.get("Dehumidifiers (water drying)");
+  if (o.waterDehu && installedDehu) {
+    // installed dehumidifiers govern; the calculated range stays visible
+    const inRange = installedDehu.count != null && installedDehu.count >= o.waterDehu.min && installedDehu.count <= o.waterDehu.max;
+    installedDehu.basis.push(`Calculated ${o.waterDehu.min}–${o.waterDehu.max} (${o.waterDehu.calc}); ${installedDehu.count} installed — the installed count is used${inRange ? "" : " ⚑ outside the calculated range: confirm it"}.`);
+  } else if (o.waterDehu) {
     const r = row("Dehumidifiers (water drying)");
     const days = o.waterDryingDays;
     r.count = o.waterDehu.max;
