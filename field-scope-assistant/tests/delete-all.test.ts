@@ -23,6 +23,8 @@ const listRoute = await import("@/app/api/projects/route");
 const oneRoute = await import("@/app/api/projects/[pid]/route");
 const delAllRoute = await import("@/app/api/projects/delete-all/route");
 const { PDFDocument } = await import("pdf-lib");
+const intake = await import("@/lib/intake");
+const { quickStart } = await import("@/lib/quickstart");
 
 type Handler<P> = (req: NextRequest, ctx: { params: Promise<P> }) => Promise<Response>;
 async function call<P>(h: Handler<P>, method: string, params: P, body?: unknown) {
@@ -91,12 +93,47 @@ describe("Delete All Projects (test DB only)", () => {
     expect(await count("documents")).toBe(3);
     const r = await call(delAllRoute.POST as Handler<object>, "POST", {}, { confirm: "DELETE ALL PROJECTS", ids });
     expect(r.status).toBe(200);
-    expect(r.json).toEqual({ deleted: 3 });
+    expect(r.json).toEqual({ deleted: 3, unlinkedAssignments: 0 });
     expect(await repo.listProjects()).toEqual([]);
     for (const t of ["projects", "visits", "drafts", "documents", "batches", "locations", "evidence", "room_scans"]) expect(await count(t), t).toBe(0);
     expect(files(ids)).toBe(0);
     // the list is empty afterwards
     expect((await call(listRoute.GET as Handler<object>, "GET", {})).json!.projects).toEqual([]);
+  });
+
+  it("FNOL assignments linked to deleted projects go back to 'new' (unlinked); none are deleted", async () => {
+    // two TEST jobs opened from the inbox flow (assignment linked to a project) + one assignment left in the inbox
+    const a = await quickStart({ address: "10 Test Unlink St", unit: "1A", customer: "Test One", job: "mold", notes: "test" });
+    const b = await quickStart({ address: "20 Test Unlink St", customer: "Test Two", job: "water", notes: "test" });
+    const inboxOnly = await intake.createAssignmentFromFnol("TEST FNOL", {
+      serviceLines: ["mitigation"], contentsOnly: false, stage: "initial_walkthrough", special: false, specialReason: null, program: null,
+      claimNumber: "TEST-1", assignmentNumber: null, policyNumber: null, carrier: null, insured: "Test Three", contactPhone: null, email: null,
+      address: "30 Test Unlink St", unit: null, lossDate: null, lossType: null, causeOfLoss: null, receivedAt: null,
+    });
+    const before = await intake.listAssignments();
+    expect(before).toHaveLength(3);
+    expect(before.filter((x) => x.status === "linked").map((x) => x.projectId).sort()).toEqual([a.projectId, b.projectId].sort());
+
+    const ids = (await repo.listProjects()).map((p) => p.id);
+    const r = await call(delAllRoute.POST as Handler<object>, "POST", {}, { confirm: "DELETE ALL PROJECTS", ids });
+    expect(r.json).toEqual({ deleted: 2, unlinkedAssignments: 2 });
+    expect(await repo.listProjects()).toEqual([]);
+
+    const after = await intake.listAssignments();
+    expect(after).toHaveLength(3); // nothing deleted
+    for (const x of after) expect([x.status, x.projectId], x.id).toEqual(["new", null]);
+    const linkedBefore = before.filter((x) => x.status === "linked");
+    for (const lb of linkedBefore) {
+      const x = after.find((y) => y.id === lb.id)!;
+      expect(x.history.at(-1)).toMatchObject({ kind: "status", text: "Project deleted (Delete All Projects) — unlinked; status → new" });
+      expect([x.insured, x.serviceLines, x.claimNumber]).toEqual([lb.insured, lb.serviceLines, lb.claimNumber]); // FNOL data kept
+    }
+    // the inbox-only assignment was not touched
+    const untouched = after.find((y) => y.id === inboxOnly.assignment.id)!;
+    expect(untouched.history).toEqual(inboxOnly.assignment.history);
+    // a reset assignment can be linked to a new project again
+    const reopened = await intake.openProjectForAssignment(linkedBefore[0].id);
+    expect((await intake.getAssignment(linkedBefore[0].id))).toMatchObject({ status: "linked", projectId: reopened.projectId });
   });
 
   it("the per-project delete is unchanged", async () => {

@@ -21,7 +21,7 @@ export default function ProjectList() {
   const [form, setForm] = useState({ address: "", unit: "", customer: "", phone: "", job: "" as QuickJob | "", appointmentTime: "", notes: "" });
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
-  const [deletedAll, setDeletedAll] = useState<number | null>(null);
+  const [deletedAll, setDeletedAll] = useState<{ n: number; unlinked: number } | null>(null);
 
   useEffect(() => {
     const t = setTimeout(() => {
@@ -134,7 +134,8 @@ export default function ProjectList() {
         )}
         {deletedAll != null && (
           <div className="card ok" role="status" style={{ marginBottom: 10 }}>
-            <strong>All projects deleted</strong> — {deletedAll} project{deletedAll === 1 ? "" : "s"} and their files, visits and drafts were removed.
+            <strong>All projects deleted</strong> — {deletedAll.n} project{deletedAll.n === 1 ? "" : "s"} and their files, visits and drafts were removed.
+            {deletedAll.unlinked > 0 && ` ${deletedAll.unlinked} FNOL assignment${deletedAll.unlinked === 1 ? " was" : "s were"} set back to “new” in the inbox.`}
           </div>
         )}
         {rows?.map((p) => (
@@ -152,8 +153,8 @@ export default function ProjectList() {
         ))}
         <DeleteAllProjects
           listVersion={rows?.length ?? -1}
-          onDeleted={(n) => {
-            setDeletedAll(n);
+          onDeleted={(n, unlinked) => {
+            setDeletedAll({ n, unlinked });
             setQ("");
             setRows([]);
           }}

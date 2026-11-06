@@ -346,6 +346,17 @@ async function pushHistory(id: string, ev: Omit<AssignmentEvent, "at">, extra?: 
     WHERE id = ${id}`;
 }
 
+/**
+ * A project is about to be deleted: every FNOL assignment linked to it goes back to "new" with no
+ * project, so it can be linked to a future project. The assignments themselves are never deleted;
+ * the reset is recorded in each assignment's history. Returns how many were reset.
+ */
+export async function unlinkAssignmentsFromProject(projectId: string, why: string): Promise<number> {
+  const rows = await query<{ id: string }>`SELECT id FROM assignments WHERE project_id = ${projectId}`;
+  for (const r of rows) await pushHistory(r.id, { kind: "status", text: `${why} — unlinked; status → new` }, { status: "new", projectId: null });
+  return rows.length;
+}
+
 export async function addAssignmentNote(id: string, text: string) {
   if (!text.trim()) throw new IntakeError("Write the update first.");
   await pushHistory(id, { kind: "update", text: text.trim().slice(0, 2000) });

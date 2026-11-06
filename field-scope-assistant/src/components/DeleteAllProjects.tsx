@@ -10,7 +10,7 @@ type P = { id: string; name: string; address: string; customer: string | null; v
  * "Yes, delete all" tap; the server also refuses unless it gets the confirmation phrase and the exact
  * list of projects this panel showed.
  */
-export default function DeleteAllProjects({ onDeleted, listVersion }: { onDeleted: (n: number) => void; listVersion: number }) {
+export default function DeleteAllProjects({ onDeleted, listVersion }: { onDeleted: (n: number, unlinked: number) => void; listVersion: number }) {
   const [all, setAll] = useState<P[] | null>(null);
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -30,10 +30,10 @@ export default function DeleteAllProjects({ onDeleted, listVersion }: { onDelete
     setBusy(true);
     setErr("");
     try {
-      const r = await api<{ deleted: number }>("/api/projects/delete-all", { body: { confirm: "DELETE ALL PROJECTS", ids: all.map((p) => p.id) } });
+      const r = await api<{ deleted: number; unlinkedAssignments: number }>("/api/projects/delete-all", { body: { confirm: "DELETE ALL PROJECTS", ids: all.map((p) => p.id) } });
       setOpen(false);
       setAll([]);
-      onDeleted(r.deleted);
+      onDeleted(r.deleted, r.unlinkedAssignments);
     } catch (e) {
       setErr((e as Error).message);
       await load().catch(() => undefined); // show the current list if it changed
@@ -53,7 +53,7 @@ export default function DeleteAllProjects({ onDeleted, listVersion }: { onDelete
           <strong id="delall-title">Delete all {n} projects?</strong>
           <p id="delall-desc" className="small" style={{ margin: 0 }}>
             This permanently deletes <strong>ALL {n} projects</strong>, their uploaded PDFs and reports, evidence, visits, room scans and every draft version.{" "}
-            <strong>There is no undo.</strong> FNOL properties and assignments stay in the inbox.
+            <strong>There is no undo.</strong> FNOL assignments stay in the inbox; any linked to these projects go back to “new” so they can be linked again.
           </p>
           <div className="small" style={{ maxHeight: 220, overflowY: "auto", border: "1px solid var(--line, #ddd)", borderRadius: 6, padding: "4px 8px" }} aria-label="Projects to delete">
             <ol style={{ paddingLeft: 18, margin: 0 }}>
