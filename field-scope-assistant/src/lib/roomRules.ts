@@ -252,7 +252,8 @@ export function analyzeRoom(scanIn: RoomScanData, ctx: RoomContext): RoomAnalysi
         questions.push(`${room}: how high does the growth go on walls ${m.walls.affectedWalls.join(", ")}? (sets the drywall removal)`);
       } else {
         const ch = explicit ? { cutIn: m.walls.floodCut as number, calc: m.walls.cutSource ? `${m.walls.floodCut}" — ${m.walls.cutSource}` : `${m.walls.floodCut}" set by PM` } : cutHeight(wet!, "3", R);
-        const parts = affectedWalls.map((w) => floodCutSF(w, ch.cutIn));
+        const parts = affectedWalls.map((w) => floodCutSF(w, ch.cutIn, t.heightFt));
+        if (parts.some((p) => p.unknownSills)) questions.push(`${room}: enter the window sill height(s) on ${m.walls.affectedWalls.join(", ")} — a window inside the ${ch.cutIn}" cut is subtracted only when its sill height is known.`);
         const missingWalls = m.walls.affectedWalls.filter((w) => !affectedWalls.some((x) => x.label === w));
         const sf = parts.length === m.walls.affectedWalls.length ? r1(parts.reduce((a, p) => a + p.sf, 0)) : null;
         const calc = `${explicit ? ch.calc : `growth to ${wet}" + 24" beyond = ${wet! + 24}" → ${ch.cutIn}" (sheet stop)`}; ${[...parts.map((p) => p.calc), ...missingWalls.map((w) => `${w}: length not measured`)].join("; ") || "walls not measured"}`;
@@ -279,7 +280,8 @@ export function analyzeRoom(scanIn: RoomScanData, ctx: RoomContext): RoomAnalysi
       if (fcNoBase.length)
         questions.push(`${room}: flood cut on ${fcNoBase.join(", ")} — the baseboard on ${fcNoBase.length > 1 ? "those walls" : "that wall"} has to come off. Mark baseboard affected (remove) for ${fcNoBase.join(", ")}?`);
       const ch = explicit ? { cutIn: m.walls.floodCut as number, calc: `${m.walls.floodCut}" set by PM` } : cutHeight(wet, cat, R);
-      const parts = affectedWalls.map((w) => floodCutSF(w, ch.cutIn));
+      const parts = affectedWalls.map((w) => floodCutSF(w, ch.cutIn, t.heightFt));
+      if (parts.some((p) => p.unknownSills)) questions.push(`${room}: enter the window sill height(s) on ${m.walls.affectedWalls.join(", ")} — a window inside the ${ch.cutIn}" cut is subtracted only when its sill height is known.`);
       const sf = parts.length ? r1(parts.reduce((a, p) => a + p.sf, 0)) : null;
       const calc = `${ch.calc}; ${parts.length ? parts.map((p) => p.calc).join("; ") : "walls not measured"}`;
       add({ id: "floodcut", ruleId: "floodCut", kind: "mitigation", scopeCategory: "removal", activity: "Flood cut", item: `drywall at ${ch.cutIn}" (${m.walls.affectedWalls.join(", ")})`, quantity: sf, unit: "SF", calc, justification: `Wet drywall to ${wet}"${cat ? `, Category ${cat}` : ""} — cut ${ch.cutIn - wet}" above the wet line for drying and removal of affected material.` });
@@ -672,9 +674,13 @@ export function analyzeRoom(scanIn: RoomScanData, ctx: RoomContext): RoomAnalysi
   const dryNow = scan.moisturePoints.length > 0 && scan.moisturePoints.every((p) => p.reading != null && p.dryGoal != null && Number(p.reading) <= Number(p.dryGoal));
 
   const lines: ScopeLine[] = drafts.map((d0) => {
-    const ov = scan.quantityOverrides[d0.id];
+    // the installed (counted on site) equipment count governs: an earlier typed quantity can't override it
+    const installed = d0.kind === "equipment" && /installed \(counted on site\)/.test(d0.calc);
+    const rawOv = scan.quantityOverrides[d0.id];
+    const ov = installed ? undefined : rawOv;
     const d: Draft = ov != null ? { ...d0, quantity: ov, calc: `${ov} ${d0.unit} — entered by the PM (was: ${d0.calc})` } : d0;
     const flags = [...(d.flags ?? [])];
+    if (installed && rawOv != null && rawOv !== d0.quantity) flags.push(`An earlier entered quantity (${rawOv}) is not used — the installed count (${d0.quantity}) governs. Change the installed count in step 5 if it's wrong.`);
     let status: ScopeLine["status"] = scan.decisions[d.id] ?? "suggested";
     const ex = exclusionFor(d, ctx);
     if (ex) {

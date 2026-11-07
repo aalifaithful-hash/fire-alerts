@@ -229,33 +229,53 @@ export function streetKey(address: string): string | null {
 
 const SUFFIXES: Record<string, string> = { street: "st", st: "st", avenue: "ave", ave: "ave", road: "rd", rd: "rd", boulevard: "blvd", blvd: "blvd", drive: "dr", dr: "dr", lane: "ln", ln: "ln", place: "pl", pl: "pl", court: "ct", ct: "ct", way: "way", terrace: "ter", ter: "ter", parkway: "pkwy", pkwy: "pkwy", concourse: "concourse" };
 
-/** House number, direction, street name and suffix ("308 East 72nd Street" → 308 / e / 72 / st). */
+/**
+ * House number, direction, FULL street name and suffix ("308 East 72nd Street" → 308 / e / 72 / st;
+ * "10 Lake View Road" → 10 / – / "lake view" / rd). Read from the address segment holding the
+ * house number (up to the first comma), stopping at the street suffix.
+ */
 export function streetParts(address: string): { num: string; dir: string | null; name: string; suffix: string | null } | null {
-  const toks = address
+  const cleaned = address
     .toLowerCase()
     .replace(/\b(apt|apartment|unit|suite|ste|#)\.?\s*[0-9a-z-]+\b/g, " ")
-    .replace(/(\d+)(st|nd|rd|th)\b/g, "$1")
-    .replace(/[^a-z0-9]+/g, " ")
-    .trim()
-    .split(" ");
+    .replace(/(\d+)(st|nd|rd|th)\b/g, "$1");
+  const segs = cleaned.split(/[,;\n]/);
+  const seg = segs.find((x) => /(^|\s)\d+[a-z]?\s+[a-z0-9]/.test(x.trim())) ?? cleaned;
+  const toks = seg.replace(/[^a-z0-9]+/g, " ").trim().split(" ").filter(Boolean);
   const i = toks.findIndex((t) => /^\d+[a-z]?$/.test(t));
   if (i < 0) return null;
   let j = i + 1;
   const DIR: Record<string, string> = { e: "e", east: "e", w: "w", west: "w", n: "n", north: "n", s: "s", south: "s" };
   let dir: string | null = null;
   if (DIR[toks[j]] && toks[j + 1] && !SUFFIXES[toks[j + 1]]) dir = DIR[toks[j++]];
-  const name = toks[j];
-  if (!name) return null;
-  const suffix = SUFFIXES[toks[j + 1]] ?? null;
-  return { num: toks[i], dir, name, suffix };
+  const nameToks: string[] = [];
+  let suffix: string | null = null;
+  for (let k = j; k < toks.length && nameToks.length < 6; k++) {
+    // the first word is always the name ("Court St"), later suffix words end it
+    if (nameToks.length && SUFFIXES[toks[k]]) {
+      suffix = SUFFIXES[toks[k]];
+      break;
+    }
+    nameToks.push(toks[k]);
+  }
+  if (!nameToks.length) return null;
+  return { num: toks[i], dir, name: nameToks.join(" "), suffix };
 }
 
-/** Same street address? Different number, direction, name or suffix (St vs Ave) is a different place; a missing direction/suffix is tolerated. */
+/**
+ * Same street address? House number, direction, the whole street name and the suffix must agree
+ * ("Lake View Road" ≠ "Lake Shore Road"; St ≠ Ave). A missing direction is tolerated; when one side
+ * has no suffix its street name must be the start of the other's (city words after it are ignored).
+ */
 export function sameStreet(a: string, b: string): boolean | null {
   const x = streetParts(a);
   const y = streetParts(b);
   if (!x || !y) return null;
-  return x.num === y.num && x.name === y.name && (!x.dir || !y.dir || x.dir === y.dir) && (!x.suffix || !y.suffix || x.suffix === y.suffix);
+  if (x.num !== y.num) return false;
+  if (x.dir && y.dir && x.dir !== y.dir) return false;
+  if (x.suffix && y.suffix) return x.suffix === y.suffix && x.name === y.name;
+  const [short, long] = x.name.length <= y.name.length ? [x.name, y.name] : [y.name, x.name];
+  return long === short || long.startsWith(`${short} `);
 }
 
 function escapeRe(s: string) {

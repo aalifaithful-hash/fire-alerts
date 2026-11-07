@@ -102,9 +102,42 @@ export function baseboardLF(w: WallInfo): { lf: number; calc: string } {
   return { lf: r1(lf), calc: `${w.label} ${ft(w.lengthFt)}${w.doorsWidthFt ? ` − doors ${ft(w.doorsWidthFt)}` : ""} = ${r1(lf)} LF` };
 }
 
-/** Flood-cut strip along a wall at a given height, minus door widths. */
-export function floodCutSF(w: WallInfo, cutIn: number): { sf: number; lf: number; calc: string } {
+/**
+ * Drywall removed along a wall up to a cut height: the wall strip minus the part of each door and
+ * window that falls inside the cut. A full-height cut (cut ≥ wall height) takes the whole wall, so
+ * every window on it is subtracted (and the drywall above a door stays in). For a partial cut a
+ * window is subtracted from its sill height; without a sill height it is NOT subtracted and the
+ * calc says so (never guessed).
+ */
+export function floodCutSF(w: WallInfo, cutIn: number, wallHeightFt: number | null = null): { sf: number; lf: number; calc: string; unknownSills: number } {
+  const full = wallHeightFt != null && cutIn >= wallHeightFt * 12;
+  const cut = full ? wallHeightFt! * 12 : cutIn;
   const lf = Math.max(0, w.lengthFt - w.doorsWidthFt);
-  const sf = lf * (cutIn / 12);
-  return { sf: r1(sf), lf: r1(lf), calc: `${w.label} ${r1(lf)} LF × ${cutIn}" (${r1(cutIn / 12)} ft) = ${r1(sf)} SF` };
+  const gross = w.lengthFt * (cut / 12);
+  const parts: string[] = [];
+  let minus = 0;
+  let unknownSills = 0;
+  for (const o of w.openings) {
+    if (o.kind !== "window") {
+      const h = Math.min(o.heightIn, cut);
+      const sf = (o.widthIn / 12) * (h / 12);
+      minus += sf;
+      parts.push(`${o.kind} ${r1(o.widthIn / 12)} × ${r1(h / 12)} ft = ${r1(sf)} SF`);
+      continue;
+    }
+    const sill = full ? (o.sillIn ?? 0) : o.sillIn;
+    if (sill == null) {
+      unknownSills++;
+      parts.push(`window not subtracted — sill height not entered`);
+      continue;
+    }
+    const inCut = full ? o.heightIn : Math.max(0, Math.min(sill + o.heightIn, cut) - sill);
+    if (inCut <= 0) continue;
+    const sf = (o.widthIn / 12) * (inCut / 12);
+    minus += sf;
+    parts.push(`window ${r1(o.widthIn / 12)} × ${r1(inCut / 12)} ft = ${r1(sf)} SF`);
+  }
+  const sf = Math.max(0, gross - minus);
+  const head = `${w.label} ${r1(w.lengthFt)} LF × ${cut}" (${r1(cut / 12)} ft${full ? ", full height" : ""}) = ${r1(gross)} SF`;
+  return { sf: r1(sf), lf: r1(lf), calc: parts.length ? `${head} − ${parts.join(" − ")} = ${r1(sf)} SF` : head, unknownSills };
 }

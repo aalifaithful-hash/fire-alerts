@@ -73,7 +73,7 @@ export interface VisitScanView {
     questions: string[];
     notes: string[];
     /** na = nothing to check yet (e.g. no exclusions, no accepted equipment) — shown neutral, never as a pass. */
-    qa: { ok: boolean; text: string; na?: boolean }[];
+    qa: { ok: boolean; text: string; na?: boolean; advisory?: boolean }[];
     /** Crew chiefs + subs (proposed from the scope, or confirmed by the PM). */
     crew: CrewPlan;
     /** How long each kind of equipment runs, and the equipment-days. */
@@ -99,7 +99,7 @@ async function reportsFor(projectId: string, recs: RoomScanRec[]): Promise<Map<s
   return out;
 }
 
-function analyzeAll(recs: RoomScanRec[], locations: Location[], facts: VisitFacts, rules: Rules, yearBuilt: number | null, visitServiceLine: string | null = null, reports: Map<string, ReportFindings> = new Map()) {
+function analyzeAll(recs: RoomScanRec[], locations: Location[], facts: VisitFacts, rules: Rules, yearBuilt: number | null, visitServiceLine: string | null = null, reports: Map<string, ReportFindings> = new Map(), projectProductionDays: string | null = null) {
   const label = (id: string) => {
     const l = locations.find((x) => x.id === id);
     return l ? fullLabel(l) : "Room";
@@ -108,13 +108,17 @@ function analyzeAll(recs: RoomScanRec[], locations: Location[], facts: VisitFact
   // the crew for per-worker-per-day lines (PPE): PM-confirmed people × work days; PPE counted once, in the first mold room
   const j = facts.jobInfo;
   const people = j.crewChiefs != null && j.subcontractors != null ? j.crewChiefs + j.subcontractors : null;
-  const pd = Number(String(j.productionDays ?? "").match(/\d+(\.\d+)?/)?.[0] ?? NaN);
-  const moldRec = recs.find((r) => r.data.loss.type === "mold" || (r.data.loss.type == null && visitServiceLine === "mold"));
+  // Production days: the project's Info tab (what the PM edits; job notes sync into it), else the visit's job info
+  const pdText = projectProductionDays ?? j.productionDays;
+  const pd = Number(String(pdText ?? "").match(/\d+(\.\d+)?/)?.[0] ?? NaN);
+  // PPE is counted once, in the first mold room still in the scope (an excluded room can't carry it)
+  const excludedRooms = new Set(facts.exclusions.filter((e) => e.target === "room").map((e) => e.locationId));
+  const moldRec = recs.find((r) => !excludedRooms.has(r.locationId) && (r.data.loss.type === "mold" || (r.data.loss.type == null && visitServiceLine === "mold")));
   const crew = {
     people,
     label: people != null ? `CC${j.crewChiefs! > 1 ? ` ×${j.crewChiefs}` : ""}+${j.subcontractors}` : null,
     days: Number.isFinite(pd) && pd > 0 ? pd : rules.crew.targetDays.mold,
-    daysBasis: Number.isFinite(pd) && pd > 0 ? "production days on the job info" : "company target days for mold remediation — edit Production days if different",
+    daysBasis: Number.isFinite(pd) && pd > 0 ? `production days “${pdText}” (${projectProductionDays ? "project Info" : "visit job info"})` : "company target days for mold remediation — set Production days on Info if different",
     ppeRoom: moldRec ? label(moldRec.locationId) : null,
   };
   return recs.map((rec) => {
@@ -188,7 +192,7 @@ async function persistAndSync(projectId: string, visitId: string, change: string
     getRules(),
     yearBuiltFor(projectId),
   ]);
-  const analyzed = analyzeAll(recs, locations, visit.facts, rules, yearBuilt, visit.serviceLine, await reportsFor(projectId, recs));
+  const analyzed = analyzeAll(recs, locations, visit.facts, rules, yearBuilt, visit.serviceLine, await reportsFor(projectId, recs), (await repo.getProject(projectId)).productionDays ?? null);
   for (const { rec, analysis } of analyzed) await writeScan(projectId, visitId, rec.locationId, { ...rec.data, lines: analysis.lines });
   const facts = syncedFacts(visit.facts, analyzed);
   const before = JSON.stringify(visit.facts.items.filter((i) => i.id.startsWith("ln")).map((i) => i.text));
@@ -206,7 +210,7 @@ export async function getVisitScans(projectId: string, visitId: string): Promise
     yearBuiltFor(projectId),
   ]);
   const reports = await reportsFor(projectId, recs);
-  const analyzed = analyzeAll(recs, locations, visit.facts, rules, yearBuilt, visit.serviceLine, reports);
+  const analyzed = analyzeAll(recs, locations, visit.facts, rules, yearBuilt, visit.serviceLine, reports, (await repo.getProject(projectId)).productionDays ?? null);
   const roomsOut = new Set(visit.facts.exclusions.filter((e) => e.target === "room").map((e) => e.locationId));
   const loc = (id: string) => locations.find((l) => l.id === id);
 
@@ -258,7 +262,6 @@ export async function getVisitScans(projectId: string, visitId: string): Promise
     waterDryingDays: waterDays.length ? Math.max(...waterDays) : (rules.equipmentDuration.waterDryingDaysClassUnknown ?? null),
   });
   for (const a of analyzed) if (a.analysis.pending.some((x) => x.startsWith("HOLD")) && !roomsOut.has(a.rec.locationId)) failures.push(`${roomLabelOf(a.rec.locationId)}: HOLD — moisture source not confirmed fixed`);
-  const presend = { ok: failures.length === 0, accepted: acceptedLines.length, failures };
   const decided = allLines.filter((l) => l.status === "accepted" || l.status === "rejected").length;
   // the room's effective loss type: what the PM set, else what the visit's kind of work implies
   const sl = visit.serviceLine;
@@ -271,26 +274,34 @@ export async function getVisitScans(projectId: string, visitId: string): Promise
   const accRemovals = allLines.filter((l) => l.status === "accepted" && /^(Remove|Flood cut)/.test(l.activity));
   const accQty = acceptedLines.filter(({ l }) => l.quantity != null);
   const na = (text: string) => ({ ok: false, na: true, text });
-  const qa: { ok: boolean; text: string; na?: boolean }[] = [
+  const qa: { ok: boolean; text: string; na?: boolean; advisory?: boolean }[] = [
     { ok: analyzed.length > 0, text: "At least one room scanned" },
     { ok: analyzed.every((a) => a.rec.data.source.where !== "unknown"), text: "Every room has a source or migration path" },
     { ok: analyzed.every((a) => a.analysis.takeoff.floorSF != null), text: "Every room is measured" },
     { ok: live.every((a) => a.rec.data.loss.type != null), text: "Loss type set in every room" },
     ...(waterRooms.length ? [{ ok: waterRooms.every((a) => a.rec.data.loss.category != null), text: "Water category confirmed in every water room" }] : []),
     accRemovals.length ? { ok: accRemovals.every((l) => !!l.justification), text: "Every accepted removal has a justification" } : na("Every accepted removal has a justification — no accepted removals to check yet"),
-    { ok: allLines.length > 0 && decided === allLines.filter((l) => l.status !== "excluded").length, text: "Every suggested line accepted or rejected" },
+    { ok: allLines.length > 0 && decided === allLines.filter((l) => l.status !== "excluded").length, text: "Every suggested line accepted or rejected", advisory: true },
     { ok: acceptedLines.length > 0, text: acceptedLines.length ? `${acceptedLines.length} line${acceptedLines.length === 1 ? "" : "s"} accepted` : "At least one line accepted" },
     { ok: acceptedLines.length > 0 && acceptedLines.every(({ l }) => l.quantity != null), text: "Accuracy: every accepted line has a quantity" },
     { ok: acceptedLines.length > 0 && acceptedLines.every(({ l }) => !!l.justification.trim()), text: "Accuracy: every accepted line has a justification" },
     accQty.length ? { ok: accQty.every(({ l }) => !!l.source), text: "Accuracy: every accepted quantity has a source (report quote, measurement, company rule or PM entry)" } : na("Accuracy: every accepted quantity has a source — no accepted lines to check yet"),
     accEquip.length ? { ok: accEquip.every(({ l }) => l.duration?.hours != null), text: "Accuracy: every accepted equipment line states how long it runs" } : na("Accuracy: every accepted equipment line states how long it runs — no accepted equipment lines to check yet"),
     { ok: !!crew.confirmed, text: crew.confirmed ? `Crew confirmed: ${crew.confirmed.label}` : "Crew (crew chiefs + subs) confirmed by the PM" },
-    { ok: !schedule.estimated, text: "Equipment run times confirmed (none still estimated)" },
+    { ok: !schedule.estimated, text: "Equipment run times confirmed (none still estimated)", advisory: true },
     visit.facts.exclusions.length ? { ok: visit.facts.exclusions.every((e) => e.signature === "signed"), text: "Exclusions have a signed customer declination" } : na("Exclusions have a signed customer declination — no exclusions recorded, nothing to check"),
     ...(waterRooms.length ? [{ ok: waterRooms.every((a) => a.rec.data.moisturePoints.length > 0), text: "Moisture points mapped in water rooms" }] : []),
     // mold: "stopped" is not "fixed" — only a source marked repaired counts
     ...(moldRooms.length ? [{ ok: moldRooms.every((a) => a.rec.data.source.status === "repaired"), text: "Mold: moisture source confirmed repaired (remediation can't be finalized otherwise; “stopped” is not enough)" }] : []),
   ];
+  // One readiness rule: the scope passes pre-send only when every important check passes too
+  // (advisory checks and "nothing to check yet" items don't block), and nothing is still pending in
+  // a room in the scope (mold report pending, items the report left open). Fails → exports say DRAFT.
+  for (const q of qa) if (!q.ok && !q.na && !q.advisory) failures.push(`Check failed: ${q.text}`);
+  for (const a of live)
+    for (const x of a.analysis.pending)
+      if (!x.startsWith("HOLD")) failures.push(`${roomLabelOf(a.rec.locationId)}: ${x.replace(/^STILL MISSING after the mold report: /, "still missing after the mold report — ")}`);
+  const presend = { ok: failures.length === 0, accepted: acceptedLines.length, failures: [...new Set(failures)] };
 
   return {
     rooms: analyzed.map(({ rec, analysis }) => {
@@ -347,7 +358,7 @@ export async function exportAppendix(projectId: string, visitId: string) {
     getRules(),
     yearBuiltFor(projectId),
   ]);
-  const analyzed = analyzeAll(recs, locations, visit.facts, rules, yearBuilt, visit.serviceLine, await reportsFor(projectId, recs));
+  const analyzed = analyzeAll(recs, locations, visit.facts, rules, yearBuilt, visit.serviceLine, await reportsFor(projectId, recs), (await repo.getProject(projectId)).productionDays ?? null);
   const roomsOut = new Set(visit.facts.exclusions.filter((e) => e.target === "room").map((e) => e.locationId));
   const rowsOut: { room: string; activity: string; item: string; quantity: string; unit: string; rate: string; total: string; notes: string }[] = [];
   for (const { rec, analysis } of analyzed) {
@@ -375,13 +386,22 @@ export async function exportAppendix(projectId: string, visitId: string) {
 /** Editable parts of a room scan. Lines and decisions are owned by the server. */
 const EditableScan = RoomScanData.omit({ lines: true, decisions: true });
 
-export async function saveRoomScan(projectId: string, visitId: string, locationId: string, input: unknown) {
+/**
+ * Fields the scan FORM never edits — they are saved by their own actions (a typed quantity or run
+ * time, a line note, an applied mold report). A form save (autosave or "Save room") keeps the stored
+ * values, so a form opened before those actions can never erase them.
+ */
+const SERVER_OWNED = ["quantityOverrides", "durationOverrides", "lineNotes", "reportChanges", "reportDocumentId", "reportRoom", "reportPrimary", "reportValues", "containmentGroup", "containmentArea", "reportNotes"] as const;
+
+export async function saveRoomScan(projectId: string, visitId: string, locationId: string, input: unknown, opts: { fromForm?: boolean } = {}) {
   await repo.getVisit(projectId, visitId);
   if (!(await repo.listLocations(projectId)).some((l) => l.id === locationId)) throw new repo.NotFound("Room not found.");
   const parsed = EditableScan.safeParse(input);
   if (!parsed.success) throw new UserError(`Check the room details: ${parsed.error.issues.map((i) => `${i.path.join(".")} ${i.message}`).slice(0, 3).join("; ")}`);
   const existing = (await rows(projectId, visitId)).find((r) => r.locationId === locationId);
-  await writeScan(projectId, visitId, locationId, { ...parsed.data, lines: existing?.data.lines ?? [], decisions: existing?.data.decisions ?? {} });
+  const data: RoomScanData = { ...parsed.data, lines: existing?.data.lines ?? [], decisions: existing?.data.decisions ?? {} };
+  if (opts.fromForm && existing) for (const k of SERVER_OWNED) (data as Record<string, unknown>)[k] = existing.data[k];
+  await writeScan(projectId, visitId, locationId, data);
   await persistAndSync(projectId, visitId, "Room scan updated.");
   return getVisitScans(projectId, visitId);
 }
@@ -503,7 +523,7 @@ export async function previewVisit(projectId: string, visitId: string, overrides
     if (!locs.some((l) => l.id === id)) locs.push({ id, floor: null, unit, room: o.roomName } as Location);
     all.push({ id: `scn_${id}`, locationId: id, data: o.data, updatedAt: "" });
   }
-  const analyzed = analyzeAll(all, locs, visit.facts, rules, yearBuilt, visit.serviceLine, await reportsFor(projectId, all));
+  const analyzed = analyzeAll(all, locs, visit.facts, rules, yearBuilt, visit.serviceLine, await reportsFor(projectId, all), (await repo.getProject(projectId)).productionDays ?? null);
   return analyzed.map(({ rec, analysis }) => ({ locationId: rec.locationId, label: fullLabel(locs.find((l) => l.id === rec.locationId)!), lines: analysis.lines, pending: analysis.pending }));
 }
 

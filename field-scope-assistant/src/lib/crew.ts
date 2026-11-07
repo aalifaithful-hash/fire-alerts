@@ -244,7 +244,11 @@ export function equipmentSchedule(
       if (d?.startStop && !r.startStop.includes(d.startStop)) r.startStop.push(d.startStop);
     }
   const installedDehu = map.get("Dehumidifiers (water drying)");
-  if (o.waterDehu && installedDehu) {
+  // a dehumidifier line the PM rejected (or excluded) stays out — the calculated count must not bring it back
+  const dehuDecidedOut = rooms.some((rm) => rm.analysis.lines.some((l) => (l.id === "equip.dehu" || l.id === "mold.dehu") && !live(l)));
+  if (o.waterDehu && !installedDehu && dehuDecidedOut) {
+    /* rejected / excluded by the PM — not in the schedule */
+  } else if (o.waterDehu && installedDehu) {
     // installed dehumidifiers govern; the calculated range stays visible
     const inRange = installedDehu.count != null && installedDehu.count >= o.waterDehu.min && installedDehu.count <= o.waterDehu.max;
     installedDehu.basis.push(`Calculated ${o.waterDehu.min}–${o.waterDehu.max} (${o.waterDehu.calc}); ${installedDehu.count} installed — the installed count is used${inRange ? "" : " ⚑ outside the calculated range: confirm it"}.`);

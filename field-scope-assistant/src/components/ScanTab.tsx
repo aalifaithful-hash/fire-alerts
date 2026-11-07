@@ -66,19 +66,51 @@ export default function ScanTab({ ws, projectId, visitId, reload, flash }: Props
   const [err, setErr] = useState("");
   const [mode, setMode] = useState<"pm" | "estimator" | "crew">("pm");
   const [newRoom, setNewRoom] = useState({ floor: "", unit: "", room: "" });
-  const [autosave, setAutosave] = useState<"" | "saving" | "saved">("");
+  const [autosave, setAutosave] = useState<"" | "saving" | "saved" | "failed">("");
+  const [retry, setRetry] = useState(0);
   const verRef = useRef(0);
   const latestRef = useRef<{ sel: string | null; form: Editable; dirty: boolean }>({ sel: null, form: blank(), dirty: false });
   const base = `/api/projects/${projectId}/visits/${visitId}`;
   useEffect(() => {
     latestRef.current = { sel, form, dirty };
   }, [sel, form, dirty]);
+  // Unsaved edits are also kept on this device until the server confirms them, so a failed save
+  // (offline, server error) is never silently dropped: they come back when the room is opened again.
+  const draftKey = useCallback((room: string) => `fsa-scan-draft:${projectId}:${visitId}:${room}`, [projectId, visitId]);
+  const keepDraft = useCallback(
+    (room: string, data: Editable) => {
+      try {
+        localStorage.setItem(draftKey(room), JSON.stringify(data));
+      } catch {
+        /* storage unavailable */
+      }
+    },
+    [draftKey],
+  );
+  const dropDraft = useCallback(
+    (room: string) => {
+      try {
+        localStorage.removeItem(draftKey(room));
+      } catch {
+        /* storage unavailable */
+      }
+    },
+    [draftKey],
+  );
   const flush = useCallback(() => {
     const L = latestRef.current;
     if (!L.dirty || !L.sel || !visitId) return;
     latestRef.current = { ...L, dirty: false };
-    void fetch(`${base}/scans/${L.sel}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ data: L.form }), keepalive: true }).catch(() => {});
-  }, [base, visitId]);
+    const room = L.sel;
+    keepDraft(room, L.form);
+    void fetch(`${base}/scans/${room}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ data: L.form }), keepalive: true })
+      .then((res) => {
+        if (res.ok) dropDraft(room); // otherwise the draft stays and is restored next time
+      })
+      .catch(() => {
+        /* offline: the draft stays on this device */
+      });
+  }, [base, visitId, keepDraft, dropDraft]);
   useEffect(() => {
     const onHide = () => flush();
     window.addEventListener("pagehide", onHide);
@@ -115,6 +147,21 @@ export default function ScanTab({ ws, projectId, visitId, reload, flash }: Props
       setForm(rest);
     } else setForm(blank());
     setDirty(false);
+    // edits that didn't reach the server earlier (failed save) come back and are saved again
+    const restored = ((): Editable | null => {
+      try {
+        const raw = localStorage.getItem(draftKey(sel));
+        return raw ? (JSON.parse(raw) as Editable) : null;
+      } catch {
+        return null;
+      }
+    })();
+    if (restored) {
+      setForm(restored);
+      verRef.current++;
+      setDirty(true);
+      setErr("Edits that hadn't reached the server were restored from this device — saving them now.");
+    }
     // leaving this room (or the tab) with unsaved edits: save them, never drop them
     return () => flush();
     // only when switching rooms
@@ -124,6 +171,12 @@ export default function ScanTab({ ws, projectId, visitId, reload, flash }: Props
   const serverData = room?.data;
   useEffect(() => {
     if (!serverData || dirty) return;
+    // a restored device draft for this room wins until it is saved
+    try {
+      if (sel && localStorage.getItem(draftKey(sel))) return;
+    } catch {
+      /* storage unavailable */
+    }
     const { lines: _l, decisions: _d, ...rest } = serverData;
     void _l;
     void _d;
@@ -155,30 +208,42 @@ export default function ScanTab({ ws, projectId, visitId, reload, flash }: Props
     setDirty(true);
   };
   // Autosave: edits are saved 1.5 s after the last change, and flushed when the room, tab or page changes.
+  // A failed save is shown, kept on this device and retried — never dropped silently.
   useEffect(() => {
     if (!dirty || !sel || !visitId) return;
-    const t = setTimeout(() => {
-      const v0 = verRef.current;
-      setAutosave("saving");
-      api<VisitScanView>(`${base}/scans/${sel}`, { method: "PUT", body: { data: form } })
-        .then((v) => {
-          setView(v);
-          if (verRef.current === v0) setDirty(false);
-          setAutosave("saved");
-          void reload();
-        })
-        .catch((e) => {
-          setAutosave("");
-          setErr(`Not saved yet: ${(e as Error).message}`);
-        });
-    }, 1500);
+    const room = sel;
+    keepDraft(room, form);
+    const t = setTimeout(
+      () => {
+        const v0 = verRef.current;
+        setAutosave("saving");
+        api<VisitScanView>(`${base}/scans/${room}`, { method: "PUT", body: { data: form } })
+          .then((v) => {
+            setView(v);
+            if (verRef.current === v0) {
+              setDirty(false);
+              dropDraft(room);
+            }
+            setAutosave("saved");
+            setErr("");
+            void reload();
+          })
+          .catch((e) => {
+            setAutosave("failed");
+            setErr(`Not saved yet — will retry (your edits are kept on this device): ${(e as Error).message}`);
+            setRetry((n) => n + 1);
+          });
+      },
+      autosave === "failed" ? 5000 : 1500,
+    );
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [form, dirty, sel, visitId, base]);
+  }, [form, dirty, sel, visitId, base, retry]);
   const save = () =>
     run("save", async () => {
       const v = await api<VisitScanView>(`${base}/scans/${sel}`, { method: "PUT", body: { data: form } });
       setDirty(false);
+      if (sel) dropDraft(sel);
       flash("Room saved — lines updated");
       void reload();
       return v;
@@ -371,16 +436,17 @@ export default function ScanTab({ ws, projectId, visitId, reload, flash }: Props
                 <Num label="Width (in)" value={o.widthIn} onChange={(v) => upd((d) => (d.measurements.openings[i].widthIn = v ?? 1))} />
                 <Num label="Height (in)" value={o.heightIn} onChange={(v) => upd((d) => (d.measurements.openings[i].heightIn = v ?? 1))} />
                 <Num label="Offset from wall's left end (ft)" value={o.offsetFt} onChange={(v) => upd((d) => (d.measurements.openings[i].offsetFt = v))} />
+                {o.kind === "window" && <Num label="Sill height from floor (in)" value={o.sillIn} onChange={(v) => upd((d) => (d.measurements.openings[i].sillIn = v))} />}
                 <button className="btn sm danger" onClick={() => upd((d) => d.measurements.openings.splice(i, 1))}>
                   Remove
                 </button>
               </div>
             ))}
             <div className="row">
-              <button className="btn sm" onClick={() => upd((d) => d.measurements.openings.push({ id: rid(), kind: "door", wall: "S", widthIn: 36, heightIn: 80, offsetFt: null }))}>
+              <button className="btn sm" onClick={() => upd((d) => d.measurements.openings.push({ id: rid(), kind: "door", wall: "S", widthIn: 36, heightIn: 80, offsetFt: null, sillIn: null }))}>
                 + Door
               </button>
-              <button className="btn sm" onClick={() => upd((d) => d.measurements.openings.push({ id: rid(), kind: "window", wall: "N", widthIn: 36, heightIn: 48, offsetFt: null }))}>
+              <button className="btn sm" onClick={() => upd((d) => d.measurements.openings.push({ id: rid(), kind: "window", wall: "N", widthIn: 36, heightIn: 48, offsetFt: null, sillIn: null }))}>
                 + Window
               </button>
             </div>
@@ -432,7 +498,7 @@ export default function ScanTab({ ws, projectId, visitId, reload, flash }: Props
             {busy === "save" ? "Saving…" : dirty ? "6. Save room and analyze" : "6. Re-analyze room"}
           </button>
           <div className="small muted" aria-live="polite" data-testid="autosave">
-            {dirty ? "Unsaved changes — saving automatically…" : autosave === "saving" ? "Saving…" : autosave === "saved" ? "✓ Changes saved automatically" : "Changes save automatically."}
+            {autosave === "failed" ? "⚠ Not saved — retrying; edits are kept on this device" : dirty ? "Unsaved changes — saving automatically…" : autosave === "saving" ? "Saving…" : autosave === "saved" ? "✓ Changes saved automatically" : "Changes save automatically."}
           </div>
 
           {/* 7. Proposed lines */}

@@ -112,7 +112,10 @@ async function yearBuiltOf(projectId: string) {
 async function visitRooms(projectId: string, visitId: string): Promise<VisitRoom[]> {
   const view = await getVisitScans(projectId, visitId);
   const locations = await repo.listLocations(projectId);
-  return view.rooms.map((r) => ({ locationId: r.locationId, label: r.label, roomName: locations.find((l) => l.id === r.locationId)?.room ?? r.label, scan: r.data as RoomScanData }));
+  return view.rooms.map((r) => {
+    const l = locations.find((x) => x.id === r.locationId);
+    return { locationId: r.locationId, label: r.label, roomName: l?.room ?? r.label, unit: l?.unit ?? null, floor: l?.floor ?? null, scan: r.data as RoomScanData };
+  });
 }
 
 export interface ReportPanelRow {

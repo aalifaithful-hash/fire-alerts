@@ -98,6 +98,7 @@ To turn AI off again, set `AI_PROVIDER=none` (or remove it) and redeploy. Settin
 - **Settings → Rules & defaults**: every professional default (`src/lib/defaults.ts`) is editable. See `docs/PLAN-fnol-to-scope.md` → "Defaults chosen".
 
 Checks: `npm run typecheck`, `npm run lint`, `npm test` (PGlite; never touches the hosted database), `npm run build`.
+Browser regression (scan autosave never erases a typed quantity / run time; failed saves are shown, kept and retried): `npm run build && npm run test:e2e` — starts its own local server on an in-memory test database and uses the Playwright/Chromium already on the machine.
 
 ## What's implemented
 

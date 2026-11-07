@@ -73,10 +73,19 @@ export async function createProject(input: Record<string, unknown>, isDemo = fal
   return getProject(id);
 }
 
+/**
+ * Partial update: only the fields present in `input` change (a field sent as null / "" is cleared on
+ * purpose); every other field keeps its value. Never wipes unrelated info.
+ */
 export async function updateProject(id: string, input: Record<string, unknown>): Promise<Project> {
-  await getProject(id);
+  const r = await queryOne<ProjectRow>`SELECT * FROM projects WHERE id = ${id}`;
+  if (!r) throw new NotFound("Project not found.");
+  const current = j<Record<string, string | null>>(r.data, {});
   const clean = cleanProjectInput(input);
-  await query`UPDATE projects SET data = ${JSON.stringify(clean)}, updated_at = ${nowIso()} WHERE id = ${id}`;
+  const merged: Record<string, string | null> = {};
+  for (const f of PROJECT_TEXT_FIELDS) merged[f] = Object.prototype.hasOwnProperty.call(input, f) ? clean[f] : (current[f] ?? null);
+  const name = merged.name ?? merged.address ?? "untitled project";
+  await query`UPDATE projects SET data = ${JSON.stringify(merged)}, name = ${name}, updated_at = ${nowIso()} WHERE id = ${id}`;
   return getProject(id);
 }
 

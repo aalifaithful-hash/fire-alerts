@@ -15,6 +15,8 @@ export const Opening = z.object({
   widthIn: z.number().positive(),
   heightIn: z.number().positive(),
   offsetFt: n.default(null), // from the wall's left end (looking at it from inside); null = centered
+  /** Windows: sill height from the floor (inches) — needed to subtract a window from a partial-height cut. */
+  sillIn: n.default(null),
 });
 export type Opening = z.infer<typeof Opening>;
 

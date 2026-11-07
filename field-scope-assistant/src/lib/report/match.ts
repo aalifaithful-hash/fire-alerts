@@ -34,6 +34,9 @@ export interface VisitRoom {
   label: string;
   roomName: string;
   scan: RoomScanData;
+  /** Unit / floor of the room (when known) — used so a report for Unit 4D never lands in another unit. */
+  unit?: string | null;
+  floor?: string | null;
 }
 /** Kept for single-room callers. */
 export interface RoomTarget {
@@ -53,10 +56,37 @@ export interface RoomPlan {
   primary: boolean;
   /** In the continuous flooring run without growth of its own. */
   runOnly: boolean;
+  /** The report room matches more than one scanned room — nothing is applied until the PM picks. */
+  ambiguous?: string[];
+  /** Matched only by a partial name (e.g. report "Bedroom" → the only "Master Bedroom") — flagged to check. */
+  partial?: boolean;
 }
 
 const TBD = /room TBD/i;
-const sameName = (a: string, b: string) => !!a && !!b && a.toLowerCase().includes(b.toLowerCase());
+const norm = (x: string) => x.toLowerCase().replace(/&/g, " and ").replace(/[^a-z0-9]+/g, " ").trim();
+/** Same room name (normalized: case, punctuation, "&"). */
+const sameName = (a: string, b: string) => !!a && !!b && norm(a) === norm(b);
+/** The scan's room name contains the report's name as whole words ("Master Bedroom" ⊃ "Bedroom"). */
+const wordIn = (room: string, report: string) => !!room && !!report && new RegExp(`(^| )${norm(report).replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}( |$)`).test(norm(room));
+const normUnit = (u: string | null | undefined) => (u ?? "").toLowerCase().replace(/^(unit|apt\.?|apartment|suite|#)\s*/i, "").replace(/[^a-z0-9]/g, "");
+
+/**
+ * Which scanned room a report room goes to: an exact name first; a partial (whole-word) name only
+ * when it is the ONLY candidate (flagged); more than one candidate → ambiguous (nothing applied).
+ * With the report's unit known, rooms in another unit are never candidates.
+ */
+function matchRoom(name: string, rooms: VisitRoom[], used: Set<VisitRoom>, reportUnit: string | null): { room: VisitRoom | null; ambiguous: string[]; partial: boolean } {
+  let pool = rooms.filter((r) => !used.has(r));
+  const ru = normUnit(reportUnit);
+  if (ru) pool = pool.filter((r) => !normUnit(r.unit) || normUnit(r.unit) === ru);
+  const exact = pool.filter((r) => sameName(r.roomName, name));
+  if (exact.length === 1) return { room: exact[0], ambiguous: [], partial: false };
+  if (exact.length > 1) return { room: null, ambiguous: exact.map((r) => r.label), partial: false };
+  const part = pool.filter((r) => wordIn(r.roomName, name));
+  if (part.length === 1) return { room: part[0], ambiguous: [], partial: true };
+  if (part.length > 1) return { room: null, ambiguous: part.map((r) => r.label), partial: false };
+  return { room: null, ambiguous: [], partial: false };
+}
 const fmtDims = (l: number | null, w: number | null, h: number | null) => `${l ?? "—"} × ${w ?? "—"} ft${h ? `, ${h} ft ceiling` : ""}`;
 const fmtPct = (p: number) => `${Math.round(p * 10) / 10}%${p >= 100 ? " (whole floor)" : ""}`;
 const RUN_LABEL = "Report run";
@@ -76,15 +106,26 @@ export function planRooms(f: ReportFindings, rooms: VisitRoom[]): RoomPlan[] {
   }
   if (!list.length) list.push({ name: "", report: null, runOnly: false });
   const used = new Set<VisitRoom>();
-  const plans: RoomPlan[] = list.map((x) => {
-    const t = x.name ? rooms.find((r) => !used.has(r) && sameName(r.roomName, x.name)) : undefined;
-    if (t) used.add(t);
-    return { name: x.name, report: x.report, target: t ?? null, primary: false, runOnly: x.runOnly };
-  });
+  const reportUnit = f.unit?.value ?? null;
+  // exact names claim their rooms first, so "Bedroom" never takes "Master Bedroom" when both exist
+  const plans: RoomPlan[] = list.map((x) => ({ name: x.name, report: x.report, target: null, primary: false, runOnly: x.runOnly }));
+  for (const exactPass of [true, false])
+    for (const p of plans) {
+      if (p.target || !p.name || p.ambiguous?.length) continue;
+      const m = matchRoom(p.name, rooms, used, reportUnit);
+      if (exactPass && (m.partial || m.ambiguous.length)) continue;
+      if (m.room) {
+        p.target = m.room;
+        p.partial = m.partial;
+        used.add(m.room);
+      } else if (m.ambiguous.length) p.ambiguous = m.ambiguous;
+    }
   for (const p of plans) {
-    if (p.target) continue;
+    if (p.target || p.ambiguous?.length) continue;
     const free = rooms.filter((r) => !used.has(r));
-    const t = free.find((r) => TBD.test(r.roomName)) ?? (plans.length === 1 && free.length === 1 ? free[0] : !p.name && free.length === 1 ? free[0] : undefined);
+    const ru = normUnit(reportUnit);
+    const sameUnit = free.filter((r) => !ru || !normUnit(r.unit) || normUnit(r.unit) === ru);
+    const t = sameUnit.find((r) => TBD.test(r.roomName)) ?? (plans.length === 1 && sameUnit.length === 1 ? sameUnit[0] : !p.name && sameUnit.length === 1 ? sameUnit[0] : undefined);
     if (t) {
       p.target = t;
       used.add(t);
@@ -127,7 +168,12 @@ export function proposeVisit(f: ReportFindings, rooms: VisitRoom[], yearBuilt: n
     };
     const anchor = (q: string | null) => (q ? { value: null, quote: q, page: p.report?.page ?? 1 } : p.report);
 
-    if (!p.target) d("room.new", "Add room", null, p.name || "Affected area (room TBD)", p.report ?? f.flooringContinuous ?? f.rooms[0] ?? null);
+    if (p.ambiguous?.length) {
+      // more than one scanned room fits — never guess: the change is offered but OFF, and the PM is told which rooms
+      mismatches.push(`The report's ${p.name} matches more than one room here (${p.ambiguous.join(", ")}) — rename the room to match, or apply to the right room by hand. Nothing is applied for it automatically.`);
+      d("room.new", "Add room", null, p.name, p.report ?? f.rooms[0] ?? null);
+    } else if (!p.target) d("room.new", "Add room", null, p.name || "Affected area (room TBD)", p.report ?? f.flooringContinuous ?? f.rooms[0] ?? null);
+    else if (p.partial) mismatches.push(`The report's ${p.name} was matched to "${p.target.roomName}" by a partial name — check it is the same room.`);
     else if (p.name && !sameName(p.target.roomName, p.name)) {
       const tbd = TBD.test(p.target.roomName) || !p.target.roomName.trim();
       d("room.name", "Room name", tbd ? null : p.target.roomName, p.name, p.report);
@@ -254,7 +300,7 @@ export function proposeVisit(f: ReportFindings, rooms: VisitRoom[], yearBuilt: n
 
     for (const x of drafts) {
       const previousReport = x.current != null && prev[x.key] === x.current ? x.current : null;
-      const conflict = x.manual && !previousReport && x.key !== "floor.affected" && x.key !== "flooring.type";
+      const conflict = (x.manual && !previousReport && x.key !== "floor.affected" && x.key !== "flooring.type") || !!p.ambiguous?.length;
       changes.push({ id: `${p.name}::${x.key}`, room: p.name, key: x.key, label: x.label, current: x.current, proposed: x.proposed, quote: x.src.quote, page: x.src.page, conflict, previousReport, ...(x.optional ? { optional: true } : {}) });
       if (previousReport) replaced.push(`${where}: ${x.label.toLowerCase()} — the earlier report said "${previousReport}", this one says "${x.proposed}".`);
     }

@@ -149,7 +149,7 @@ describe("3 — PPE from the confirmed crew × days", () => {
     const after = await scans.setScanOptions(p.id, v.id, { crew: { crewChiefs: 1, subcontractors: 0 } });
     const bed = after.rooms.find((r) => r.label === "Bedroom")!.data.lines.find((x) => x.id === "mold.ppe")!;
     expect(bed).toMatchObject({ quantity: 2, unit: "EA/worker/day" });
-    expect(bed.calc).toBe("1 on the crew (CC+0, PM confirmed) × 2 days (company target days for mold remediation — edit Production days if different) = 2 sets");
+    expect(bed.calc).toBe("1 on the crew (CC+0, PM confirmed) × 2 days (company target days for mold remediation — set Production days on Info if different) = 2 sets");
     expect(bed.flags.join(" ")).not.toMatch(/Set crew size/);
     const denPpe = after.rooms.find((r) => r.label === "Den")!.data.lines.find((x) => x.id === "mold.ppe")!;
     expect(denPpe).toMatchObject({ quantity: 0, calc: "counted once for the job in Bedroom" });
