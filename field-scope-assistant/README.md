@@ -1,0 +1,167 @@
+# Field Scope Assistant
+
+A mobile-first web app for a restoration project manager. It turns CompanyCam photo-report PDFs, photo captions and your field notes (typed or dictated) into room-by-room scopes and visit updates. You can then correct the result in plain language.
+
+Workflow: **open a project → upload the CompanyCam PDF → type or dictate the loss and damage → generate → correct by voice or text → copy to Slack, or export a PDF or DOCX.**
+
+## Setup
+
+Requirements: Node.js 20 or later (tested on 22) and npm.
+
+```bash
+cd field-scope-assistant
+npm install
+cp .env.example .env.local      # then set ANTHROPIC_API_KEY
+npm run dev                     # http://localhost:3000
+```
+
+For production the app runs on **Vercel + Neon Postgres + Vercel Blob** (current setup). It also runs on any Node host with a Postgres database.
+
+### Hosting on Vercel (current)
+
+- **Database:** Neon Postgres connected to the project. The integration sets `DATABASE_URL` / `POSTGRES_URL`. Tables are created and migrated automatically on first request; migrations only add columns or defaults and never drop data.
+- **Files:** a **private** Vercel Blob store connected to the project, which sets `BLOB_READ_WRITE_TOKEN`. The browser uploads PDFs straight to Blob (any size up to 200 MB, so there is no 4.5 MB function-body limit). The server then reads the PDF from Blob to extract text and analyze pages. There are no public file URLs.
+- **Links:** open the **production domain**. Deployment-specific URLs (`fire-alerts-<hash>-<team>.vercel.app`) are behind Vercel Deployment Protection, which shows a Vercel sign-in page to anyone not logged in to Vercel. Use `APP_PASSCODE` to protect the app itself.
+
+### Environment variables
+
+| Variable | Required | Purpose |
+|---|---|---|
+| `DATABASE_URL` (or `POSTGRES_URL`) | Yes | Postgres connection, set by the Neon integration. Without it, API calls return a clear 503. |
+| `BLOB_READ_WRITE_TOKEN` | Yes on Vercel | Private Blob store for PDFs and manuals, set by connecting the Blob store. Without it, uploads go through the server, which is fine locally but fails on Vercel. |
+| `AI_PROVIDER` | No (default `none`) | `anthropic` or `gemini` turns AI on with that provider's key; see "AI provider setup". |
+| `ANTHROPIC_API_KEY` / `GEMINI_API_KEY` | Only for AI | Server-side only. Without AI, everything except AI analysis works. |
+| `APP_PASSCODE` | Recommended | Passcode screen for every page and API call. |
+| `ANTHROPIC_MODEL` / `GEMINI_MODEL` | No | Defaults `claude-opus-5-5` / `gemini-3.8-flash`. |
+| `DATA_DIR` | No | Local-only file storage when there is no Blob token. Default `./.data`. |
+
+Local development: `DATABASE_URL=pglite://memory npm run dev` runs real Postgres in-process (data is lost on restart), or point it at a Neon dev branch.
+
+### Without an Anthropic API key
+
+Verified behavior with no `ANTHROPIC_API_KEY`:
+
+- **Works:** projects and search, floors, units and rooms; visits, times, access outcome and history; field notes (typed or dictated, autosaved); PDF upload and storage; page-text extraction at upload (Photos → View text); writing the scope by hand (Start the scope manually, then add, edit, move or remove bullets, or Edit text); versions and restore; Copy for Slack, PDF and DOCX; checklist template editing.
+- **Waits for the key:** AI photo analysis. Uploaded PDFs show "Photo analysis (AI): waiting for the Anthropic API key", and their batches stay queued (they are not failed). They run the next time the Photos tab is opened after the key is added.
+- **Needs the key:** AI-drafted scopes, plain-language corrections, AI questions and suggestions, checklist auto-fill, and company-manual rule extraction.
+
+**Turning AI on later:** set `ANTHROPIC_API_KEY` as a server environment variable and redeploy. Nothing else in the app changes. This is on hold for now by the owner's decision.
+
+### Tests
+
+```bash
+npm test          # 35 tests on in-process Postgres (PGlite): rules, renderers, corrections, isolation,
+                  # PDF pipeline, notes persistence through the real routes, Blob upload guards.
+                  # Tests never use DATABASE_URL from your environment, so they cannot touch the hosted DB.
+npm run typecheck
+```
+
+## AI provider setup (AI_PROVIDER)
+
+AI is **off by default**, and the app is fully usable without it: manual drafting, PDF text extraction, the room-by-room scan, the sketch and exports. When AI is turned on, it can use either **Anthropic Claude** or **Google Gemini**. You switch with environment variables only; no code changes.
+
+| Variable | Values | Notes |
+|---|---|---|
+| `AI_PROVIDER` | `none` (default) · `anthropic` · `gemini` | Anything else is reported as "not recognized" and AI stays off. A key alone does **not** turn AI on. |
+| `ANTHROPIC_API_KEY` | key from console.anthropic.com | Used when `AI_PROVIDER=anthropic` |
+| `ANTHROPIC_MODEL` | optional, default `claude-opus-5-5` | |
+| `GEMINI_API_KEY` | key from Google AI Studio (aistudio.google.com → Get API key) | Used when `AI_PROVIDER=gemini` |
+| `GEMINI_MODEL` | optional, default `gemini-3.8-flash` | Any Gemini model ID that accepts images and PDFs |
+
+**To switch providers** (in Vercel → Project → Settings → Environment Variables, or `.env.local` locally):
+1. Set `AI_PROVIDER` to `gemini` (or `anthropic`).
+2. Set that provider's key.
+3. Redeploy.
+
+To turn AI off again, set `AI_PROVIDER=none` (or remove it) and redeploy. Settings → Setup shows which provider and model are active, or what is missing.
+
+**Gemini notes:**
+- **Default model.** `gemini-3.8-flash` is the newest stable Flash model ID listed in the official Google Gen AI SDK (`@google/genai` 2.32.0, Oct 2026). Flash-class models are multimodal (photos and PDFs), fast, and lower-cost, which fits PDF photo analysis and scope drafting. The ID is pinned rather than `gemini-flash-latest`, so behavior doesn't change underneath you. Confirm it on Google's models page before turning AI on.
+- **Free tier vs paid.** A Google AI Studio key works on the free tier without billing, but with lower rate limits. Per Google's terms, free-tier prompts and responses may be used to improve Google's products, so it isn't suitable for customer data. The paid tier (billing enabled on the key's Google Cloud project) raises the limits and keeps that content out of product improvement. Exact per-model limits are on Google's "Rate limits" page; they couldn't be checked from the build environment. **Recommendation: paid tier before real customer data.**
+- **PDF size.** Inline requests are limited to about 20 MB, so the app sends PDF chunks of at most 14 MB to Gemini (18 MB to Claude). Oversized batches are split per page automatically.
+
+## FNOL intake and the room-by-room scan (no AI)
+
+- **Inbox** (`/inbox`): paste an FNOL and tap Parse. The rules-based parser reads:
+  - the kind of work: EMS, mitigation, reconstruction, contents, or contents only;
+  - the kind of visit: initial or final walk-through, monitoring or kickoff;
+  - special assignment and reason, program, claim and job numbers, carrier, insured, phone, address and unit, loss date and type, and cause.
+
+  Review and edit, then save. The FNOL becomes an **assignment** on a **property**; one property keeps many assignments with full history. "Open project & start visit" creates the visit with the matching output format.
+- **Scan tab** (in a project), one room at a time:
+  1. Cause and location in the room.
+  2. Affected materials and contents.
+  3. Manual measurements.
+  4. Proposed line items, with quantity math and justification, to accept or reject.
+
+  Supporting features: exclusions, calculated equipment, pre-send checks, and a sketch printed after the scope in the PDF and DOCX.
+- **Settings → Rules & defaults**: every professional default (`src/lib/defaults.ts`) is editable. See `docs/PLAN-fnol-to-scope.md` → "Defaults chosen".
+
+Checks: `npm run typecheck`, `npm run lint`, `npm test` (PGlite; never touches the hosted database), `npm run build`.
+Browser regression (scan autosave never erases a typed quantity / run time; failed saves are shown, kept and retried): `npm run build && npm run test:e2e` — starts its own local server on an in-memory test database and uses the Playwright/Chromium already on the machine.
+
+## What's implemented
+
+**Screens.** All screens are phone-sized, with large controls and a light variant for sunlight.
+- Project list with search, and a clearly labeled DEMO project you can load.
+- Project workspace tabs:
+  - **Scope**: visit picker and new visit; visit details (output type, date, appointment time, actual arrival and departure, access outcome); field notes with voice dictation; Generate; questions; suggestions you can accept, edit or reject; the editable scope; review flags; checklist; draft versions with restore; delete visit.
+  - **Photos**: PDF upload with progress, per-report batch progress, retry and resume, and an evidence list grouped by room with "needs a room" first.
+  - **Rooms**: floor → unit → room tree. Add, rename or delete rooms.
+  - **History**: list of visits.
+  - **Info**: all project fields (none required) and project deletion.
+- **Persistent correction box** pinned to the bottom of the Scope tab, with a mic. After each correction it shows a short summary of what changed, or asks a one-line clarification.
+- **Settings**: AI and passcode status, checklist template editor, company manual upload with extracted rules and flagged conflicts.
+
+**PDF pipeline** (`src/lib/pdf.ts`, `service.ts → ingestPdf / processNextBatch`)
+- Selectable text is extracted per page (`unpdf`). Pages with almost no text are marked as scanned and read visually.
+- The report is split into 4-page sub-PDFs (`pdf-lib`). Each one is sent to Claude as a PDF document, together with that page's extracted text. Claude reads both the page images and the text, which covers OCR for scanned pages.
+- Each photo keeps its own caption and its page and photo index. Floor, unit and room labels are detected. Low-confidence or ambiguous room assignments are flagged and never guessed. Unreadable pages are recorded as such.
+- Batches are claimed atomically and retried up to 3 times. Batches interrupted mid-run (for example by a server restart) are released after 6 minutes. Oversized batches split into single pages. The UI resumes automatically and shows a progress bar.
+- Tap any evidence item to see its PDF page rendered in the browser and reassign its room.
+
+**Facts, kept separate from prose.** The AI never writes the final document. It returns schema-validated facts (structured outputs and Zod): items with category, status (reported, observed, proposed, approved, scheduled, in progress, completed, unknown) and source (your notes, accepted suggestion, your edit, photo, caption, prior visit), plus equipment with quantity and status, questions and recommendations. Deterministic renderers (`src/lib/render.ts`) then produce a separate format for each of the 8 visit types:
+- Initial mitigation follows the bullet order from the brief.
+- Monitoring lists equipment activity, then still elevated, now dry, changes, and remaining work.
+- Final walk-through uses only confirmed completed work, keeps scheduled work separate, reports equipment removal and pickup status, and lists completion forms. It never says the file is closed.
+- Reconstruction includes sequencing and access sections.
+- Contents cleaning and initial assessment have their own formats.
+- Checklist output groups items as Applicable, Completed, Pending, Not applicable or Not documented.
+
+Source references appear only in the evidence panel (tap a bullet), not in the copy-ready text.
+
+**Rules enforced in code**, not just in the prompt (`src/lib/guards.ts`), and re-run after every AI step and correction:
+- Work the AI inferred becomes a *recommendation*, never a scope line. This covers antimicrobial, demolition, containment and extraction.
+- "Drying only", "no demo" and similar phrases remove non-PM removal and cavity-access work and withhold demolition suggestions.
+- `CC+N` is parsed as 1 crew chief + N subcontractors.
+- An equipment count that doesn't appear in your notes, captions or the prior record is removed and flagged. A count seen only in a photo becomes a "confirm the count" flag.
+- Numbers in bullets that don't appear anywhere in the record are flagged.
+- Water category is dropped unless you stated it.
+- "Completed" requires your words, or an earlier visit that recorded it as completed. Caption or photo "completion" is downgraded and flagged.
+- Equipment stays "pickup scheduled" until you say it was picked up or removed. A dry room keeps its equipment.
+- Conditions carried forward from the prior visit stay out of today's scope until you confirm them (for example "same as yesterday"). The review panel lists exactly what was carried.
+- New visits never copy appointment times, arrival or departure times, or access outcome.
+
+**Corrections** (`src/lib/patch.ts`). Your correction is turned into targeted operations: update, add or remove an item, update equipment, move a room's entries ("that's the closet, not the bedroom"), rename a room, set job info or a directive, answer a question, or set a visit field. Operations only touch what they name, so other rooms can't be dropped. A room name that matches more than one room (two units with a "Closet") stops the correction and asks "Which closet? …".
+
+**Storage and exports.** Postgres (Neon) stores projects, page text, evidence, the room hierarchy, visits with their facts, and every draft version. Source PDFs live in the private Blob store. Each version records what triggered it, your correction text and the change summary, and any version can be restored. Exports: Copy for Slack (mrkdwn), plain text, PDF (`pdf-lib`) and DOCX (`docx`).
+
+**Isolation and security**
+- Every query is scoped by project id, and AI context is built only from that project. A test checks that another project's notes, rooms and evidence ids never reach a prompt or a scope.
+- Uploads are served only through an authenticated route with `no-store`.
+- The API key never leaves the server.
+- Error logs contain the error type and message only, never document text.
+- Deleting a project removes its files and records, and the delete controls cover projects, PDFs, visits, rooms, manuals and templates.
+- All PDF and manual text is wrapped as evidence and treated as data, not instructions.
+
+**Checklists and manuals.** Starter checklist templates are labeled "edit to match your company". Checklist "completed" requires an exact quote from your notes (checked in code). Uploaded manuals are turned into reusable rules that are stored separately from job facts. Rules that conflict with another manual are flagged as conflicts and never merged.
+
+## Limitations and next steps
+
+- **Live AI calls were not exercised during development.** No API key was available in the build environment. The Anthropic request code typechecks against the installed SDK (structured outputs and the refusal-fallback option), and every downstream step is tested with a faked model. The first real run should use a short PDF to check the extraction quality on your actual CompanyCam layouts.
+- Photo-level crops aren't extracted. The evidence viewer shows the whole source page together with the photo index and caption.
+- Voice dictation uses the browser's Web Speech API (Chrome, Edge, Safari). Where it isn't available, the phone keyboard's mic works in the same fields.
+- Scanned company manuals (image-only PDFs) aren't supported yet. Manuals need selectable text or `.txt`.
+- Single-user design: one passcode, no per-user accounts or audit of who changed what.
+- Large PDFs are processed in the browser-driven batch loop. Keep the Photos tab open until it finishes. If it's interrupted, it resumes when you reopen the tab.
+- Free-text "Edit text" edits are saved as a version but sit outside the structured facts. A later correction or regenerate replaces them, and the app warns you when that happens.
