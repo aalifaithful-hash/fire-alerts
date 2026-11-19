@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Job Search Briefing</title>
+<style>
+:root{--bg:#fafaf8;--fg:#1c1c1c;--muted:#666;--accent:#1f5fbf;--card:#fff;--line:#e3e3e0}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#141414;--fg:#eee;--muted:#aaa;--accent:#6ea3ff;--card:#1e1e1e;--line:#333}}
+body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.6 system-ui,sans-serif}
+main{max-width:720px;margin:0 auto;padding:24px 16px 80px}
+h1{font-size:1.4rem;margin:0 0 4px}
+.sub{color:var(--muted);margin:0 0 20px}
+.bar{position:sticky;top:0;background:var(--bg);padding:12px 0;display:flex;gap:8px;flex-wrap:wrap;border-bottom:1px solid var(--line);z-index:1}
+button{font:inherit;padding:10px 18px;border-radius:999px;border:1px solid var(--accent);background:var(--accent);color:#fff;cursor:pointer}
+button.ghost{background:transparent;color:var(--accent)}
+select{font:inherit;padding:8px;border-radius:8px;max-width:100%;background:var(--card);color:var(--fg);border:1px solid var(--line)}
+p.seg{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin:10px 0;cursor:pointer}
+p.seg.on{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent)}
+</style>
+</head>
+<body>
+<main>
+<h1>Your job search briefing</h1>
+<p class="sub">Press Play to hear it. Tap any paragraph to jump to it.</p>
+<div class="bar">
+  <button id="play">▶ Play</button>
+  <button id="pause" class="ghost">Pause</button>
+  <button id="stop" class="ghost">Stop</button>
+  <select id="rate"><option value="0.9">Slower</option><option value="1" selected>Normal speed</option><option value="1.15">Faster</option></select>
+  <select id="voice"></select>
+</div>
+<div id="text">
+<p class="seg">First, an important note. I can't submit applications for you from here, and please don't send me your passwords. Anything you paste in chat is stored in the conversation, and LinkedIn and Indeed often lock accounts when a bot logs in from a server. There's a safer way for me to do the clicking, which I'll explain at the end.</p>
+<p class="seg">Here are the openings that meet your ninety thousand dollar floor.</p>
+<p class="seg">Number one. General Adjuster, Large Loss Property, at PURE Insurance in New York. It's a W-2 job paying ninety to one hundred ten thousand dollars base. It's a carrier, so it's fine once you're no longer working at SERVPRO.</p>
+<p class="seg">Number two. General Adjuster at Berkley, in New York City. W-2, paying one hundred thirty to one hundred forty-five thousand dollars, plus a bonus. Also a carrier, so the same rule applies.</p>
+<p class="seg">Number three. General Adjuster, Property, at Advanced Adjustment in New York City. It's commission based, ten ninety-nine work, with estimated earnings of ninety thousand to two hundred thousand dollars. It's an independent firm and requires five or more years of property claims experience, which you have.</p>
+<p class="seg">Number four. Building and Construction Consultant at Aggregate Construction Consultants. It's remote, covering New York State, on a ten ninety-nine contract, paying seventy-five to ninety-two fifty an hour. Full time, that's over one hundred fifty thousand dollars a year. Conflict risk is low, and this is the independent consultant work you said you're open to. They ask for ten or more years combined in construction, restoration, and claims. Your seven years of claims plus your SERVPRO work may count.</p>
+<p class="seg">Number five. Large Loss Property Adjuster at Allstate in New York City. W-2, paying about sixty-three thousand to one hundred fourteen thousand dollars. You've worked there before. Only take it if the offer is at the top of the range.</p>
+<p class="seg">Number six. Building Consultant at Keystone Experts Engineers in Rochester. Contract work, pay not listed. Low conflict risk, but it's upstate.</p>
+<p class="seg">Please confirm each posting is still open before applying, because some listings are a few months old.</p>
+<p class="seg">Now, about conflict of interest. Insurance carriers and independent adjusting firms, like PURE, Berkley, and Alacrity, are fine as long as you aren't also working at SERVPRO. Adjusting claims while working for a restoration contractor is the hard conflict you described.</p>
+<p class="seg">Building consultants, forensic estimators, and appraisers, like J.S. Held, Envista, Rimkus, and Aggregate, are usually the cleanest option for you. They pay well, often as ten ninety-nine work, and the work stays neutral as long as you step away from any file where SERVPRO is the contractor.</p>
+<p class="seg">Carrier work as a ten ninety-nine independent adjuster during catastrophe season is also fine. You already have your New York and Florida licenses and Haag training.</p>
+<p class="seg">Here are the best platforms for your field, in order. One, LinkedIn. It's the best for General Adjuster and consultant roles. Turn on Open to Work, set so only recruiters can see it.</p>
+<p class="seg">Two, Indeed, which has the most adjuster and Xactimate listings. Three, ZipRecruiter, which is strong for ten ninety-nine and contract estimator work.</p>
+<p class="seg">Four, independent adjusting firm rosters, like Pilot, Crawford, Sedgwick, Eberl, Alacrity, and Renfroe. You're already on some of these, so update your profile. This is where the high-paying catastrophe work comes from.</p>
+<p class="seg">Five, the career pages of consulting firms, like J.S. Held, Envista Forensics, Rimkus, and Young and Associates. Many of their roles never appear on job boards. And six, Glassdoor, mainly to check pay and reviews before an interview.</p>
+<p class="seg">Finally, here's how I can help without your passwords. The easiest way is to connect your computer and use the Claude in Chrome extension. I'd work in your own browser, where you're already signed in. I can fill in the applications, and you review and press Submit on each one.</p>
+<p class="seg">Meanwhile, I can write a tailored résumé and cover letter for each lead, starting with PURE, Berkley, and Aggregate. Your SERVPRO scoping work and your Allstate files over five hundred thousand dollars are your strongest selling points.</p>
+<p class="seg">So, which would you like? Should I start the tailored applications for those three, or set up the browser connection first?</p>
+</div>
+</main>
+<script>
+const synth = window.speechSynthesis;
+const segs = [...document.querySelectorAll('.seg')];
+const voiceSel = document.getElementById('voice');
+const rateSel = document.getElementById('rate');
+let idx = 0, playing = false, voices = [];
+function loadVoices(){
+  if(!synth) return;
+  voices = synth.getVoices().filter(v => v.lang && v.lang.startsWith('en'));
+  const prefer = voices.findIndex(v => /natural|neural|premium|enhanced|samantha|google us/i.test(v.name));
+  voiceSel.innerHTML = voices.map((v,i)=>`<option value="${i}">${v.name}</option>`).join('');
+  if(prefer >= 0) voiceSel.value = prefer;
+}
+if(synth){ loadVoices(); synth.onvoiceschanged = loadVoices; }
+function mark(){ segs.forEach((s,i)=>s.classList.toggle('on', i===idx && playing)); }
+function speak(){
+  if(!synth){ alert('Your browser does not support speech playback.'); return; }
+  if(idx >= segs.length){ playing=false; idx=0; mark(); return; }
+  const u = new SpeechSynthesisUtterance(segs[idx].textContent);
+  if(voices[voiceSel.value]) u.voice = voices[voiceSel.value];
+  u.rate = parseFloat(rateSel.value);
+  u.onend = () => { if(playing){ idx++; speak(); } };
+  mark();
+  segs[idx].scrollIntoView({behavior:'smooth', block:'center'});
+  synth.speak(u);
+}
+document.getElementById('play').onclick = () => {
+  if(synth && synth.paused){ synth.resume(); return; }
+  synth && synth.cancel(); playing = true; speak();
+};
+document.getElementById('pause').onclick = () => synth && synth.pause();
+document.getElementById('stop').onclick = () => { playing=false; synth && synth.cancel(); idx=0; mark(); };
+segs.forEach((s,i)=>s.onclick = () => { synth.cancel(); idx=i; playing=true; speak(); });
+</script>
+</body>
+</html>
