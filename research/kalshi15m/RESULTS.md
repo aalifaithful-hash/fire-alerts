@@ -24,6 +24,17 @@ No forward paper test is warranted. Per the protocol, rules are not being re-tun
 - BRTI tick data (paid).
 - Order-book depth.
 - Sub-minute quotes.
-- Gold, WTI, SOL and XRP (download pending; held as a fully unseen check of the same frozen rules).
 - Hourly and daily crypto markets.
 - Maker (limit-order) execution. Resting orders pay lower or no fees but get filled adversely; testing that needs order-book history.
+
+## Unseen-market check (run after RESULTS were written; same frozen logic; full Sep 12 – Nov 19 history never examined before)
+
+The data covers SOL and XRP with 6,459 markets each, WTI with 4,775 and Gold with 4,440.
+
+| Rule logic | Markets | Trades | Win rate | Avg price paid | Net per contract | Net $ (+0¢) | Net $ (+1¢) |
+|---|---|---|---|---|---|---|---|
+| R1 logic: buy YES, 3–9 min, 20–95¢ | Gold, WTI | 8,113 | 54.4% | 54.6¢ | −1.6¢ | −$6,481 | −$9,630 |
+| R2 logic: buy the favourite, 6–14 min, 80–95¢ | SOL, XRP | 9,961 | 83.6% | 84.2¢ | −1.5¢ | −$3,380 | −$5,482 |
+| R3: buy NO ≥60¢ at 2 min | all four | 6,601 | 86.8% | 88.2¢ | −2.1¢ | −$3,218 | −$4,446 |
+
+The 95% bootstrap lower bound is negative for every rule. The conclusion holds: in every case the win rate was below the price paid plus the fee.
