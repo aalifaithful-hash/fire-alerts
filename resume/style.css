@@ -1,0 +1,16 @@
+@page{size:Letter;margin:0.5in 0.6in}
+*{box-sizing:border-box}
+body{font-family:Arial,Helvetica,sans-serif;color:#222;font-size:10.2pt;line-height:1.32;margin:0}
+h1{font-size:26pt;color:#14284b;margin:0;letter-spacing:.5px}
+.title{color:#2f6db5;font-weight:bold;font-size:11.5pt;margin:2px 0}
+.contact{color:#666;font-size:9.5pt;padding-bottom:6px;border-bottom:2px solid #14284b}
+h2{font-size:11.5pt;color:#14284b;margin:12px 0 5px;padding-bottom:2px;border-bottom:1.5px solid #2f6db5}
+p{margin:0 0 4px}
+.job{margin-top:7px}
+.row{display:flex;justify-content:space-between;font-weight:bold}
+.row .co{color:#2f6db5}
+.row .dt{color:#555;font-size:9.5pt}
+.sub{font-style:italic;color:#555;font-size:9.5pt}
+ul{margin:2px 0 0 0;padding-left:20px}
+li{margin:1px 0}
+.skills p{margin:0}
